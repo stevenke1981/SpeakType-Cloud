@@ -68,78 +68,150 @@ pub fn clear_api_key(env_name: &str) -> AppResult<()> {
 
 #[cfg(target_os = "windows")]
 fn read_user_environment(env_name: &str) -> AppResult<Option<String>> {
-    use std::io::ErrorKind;
-    use winreg::enums::KEY_READ;
-    use winreg::HKCU;
-
-    let environment = match HKCU.open_subkey_with_flags("Environment", KEY_READ) {
-        Ok(environment) => environment,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(AppError::Io(format!(
-                "無法讀取 Windows 使用者環境變數：{error}"
-            )))
-        }
+    use std::ffi::c_void;
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ,
     };
 
-    match environment.get_value::<String, _>(env_name) {
-        Ok(value) => Ok(Some(value)),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(AppError::Io(format!(
-            "無法讀取環境變數 {env_name}：{error}"
-        ))),
+    let subkey = wide("Environment");
+    let value_name = wide(env_name);
+    let mut byte_count = 0_u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            value_name.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut byte_count,
+        )
+    };
+    if status == ERROR_FILE_NOT_FOUND {
+        return Ok(None);
     }
+    if status != ERROR_SUCCESS {
+        return Err(registry_error(
+            &format!("無法讀取環境變數 {env_name}"),
+            status,
+        ));
+    }
+    if byte_count == 0 {
+        return Ok(Some(String::new()));
+    }
+
+    let mut data = vec![0_u16; (byte_count as usize).div_ceil(2)];
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            value_name.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            data.as_mut_ptr().cast::<c_void>(),
+            &mut byte_count,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(registry_error(
+            &format!("無法讀取環境變數 {env_name}"),
+            status,
+        ));
+    }
+
+    data.truncate((byte_count as usize / 2).min(data.len()));
+    while data.last() == Some(&0) {
+        data.pop();
+    }
+    String::from_utf16(&data)
+        .map(Some)
+        .map_err(|error| AppError::Io(format!("環境變數 {env_name} 不是有效的 Unicode：{error}")))
 }
 
 #[cfg(target_os = "windows")]
 fn save_user_environment(env_name: &str, api_key: &str) -> AppResult<()> {
-    use winreg::HKCU;
-
-    let (environment, _) = HKCU
-        .create_subkey("Environment")
-        .map_err(|error| AppError::Io(format!("無法開啟 Windows 使用者環境變數：{error}")))?;
-    environment
-        .set_value(env_name, &api_key)
-        .map_err(|error| AppError::Io(format!("無法儲存環境變數 {env_name}：{error}")))
-}
-
-#[cfg(target_os = "windows")]
-fn clear_user_environment(env_name: &str) -> AppResult<()> {
-    use std::io::ErrorKind;
-    use winreg::enums::KEY_SET_VALUE;
-    use winreg::HKCU;
-
-    let environment = match HKCU.open_subkey_with_flags("Environment", KEY_SET_VALUE) {
-        Ok(environment) => environment,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(AppError::Io(format!(
-                "無法開啟 Windows 使用者環境變數：{error}"
-            )))
-        }
+    use std::ffi::c_void;
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ,
     };
 
-    match environment.delete_value(env_name) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(AppError::Io(format!(
-            "無法清除環境變數 {env_name}：{error}"
-        ))),
+    let subkey = wide("Environment");
+    let value_name = wide(env_name);
+    let data = wide(api_key);
+    let byte_count = u32::try_from(data.len().saturating_mul(std::mem::size_of::<u16>()))
+        .map_err(|_| AppError::Configuration("API Key 長度超出 Windows 限制".to_string()))?;
+    let status = unsafe {
+        RegSetKeyValueW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            value_name.as_ptr(),
+            REG_SZ,
+            data.as_ptr().cast::<c_void>(),
+            byte_count,
+        )
+    };
+    if status == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(registry_error(
+            &format!("無法儲存環境變數 {env_name}"),
+            status,
+        ))
     }
 }
 
 #[cfg(target_os = "windows")]
-fn broadcast_environment_change() {
+fn clear_user_environment(env_name: &str) -> AppResult<()> {
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{
+        RegDeleteKeyValueW, HKEY_CURRENT_USER,
+    };
+
+    let subkey = wide("Environment");
+    let value_name = wide(env_name);
+    let status = unsafe {
+        RegDeleteKeyValueW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            value_name.as_ptr(),
+        )
+    };
+    if status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND {
+        Ok(())
+    } else {
+        Err(registry_error(
+            &format!("無法清除環境變數 {env_name}"),
+            status,
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn wide(value: &str) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
+
+    OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn registry_error(context: &str, status: u32) -> AppError {
+    let error = std::io::Error::from_raw_os_error(status as i32);
+    AppError::Io(format!("{context}：{error}"))
+}
+
+#[cfg(target_os = "windows")]
+fn broadcast_environment_change() {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
     };
 
-    let environment = OsStr::new("Environment")
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
+    let environment = wide("Environment");
     let mut result = 0_usize;
 
     unsafe {
