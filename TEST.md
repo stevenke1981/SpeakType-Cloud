@@ -1,0 +1,55 @@
+# Test and Acceptance Record
+
+驗證日期：2026-07-17<br>
+驗證主機：Windows 10 22H2（10.0.19045）、Rust 1.96.0 stable MSVC
+
+## Automated gate
+
+執行：
+
+```powershell
+$env:PATH = "C:\Users\steven\.cargo\bin;$env:PATH"
+.\scripts\check.ps1
+```
+
+結果：
+
+- `cargo fmt --check`：通過。
+- `cargo clippy --all-targets --all-features -- -D warnings`：通過。
+- `cargo test --all-targets`：32 passed、0 failed。
+- `cargo build --release`：通過。
+- `scripts/check.ps1`：exit 0。
+
+自動測試涵蓋：
+
+- config 預設值、provider key 選擇、環境變數名稱驗證、malformed TOML 保護，以及 serialization／Debug 不讀入 API Key 值；
+- stereo-to-mono、16 kHz 重採樣、WAV RIFF 輸出與 cpal callback 錯誤交接；
+- hotkey parsing 與 CJK spacing cleanup；
+- hotkey listener bounded startup handshake、立即失敗與 runtime failure UI channel；
+- OpenAI endpoint、必要 multipart 欄位、timeout、401、空結果與 response body secret redaction；
+- xAI timeout、429、空結果、中文 formatting 行為，以及 `file` 為 multipart 最後欄位；
+- 排除 SpeakType 自身 HWND、保存最後外部視窗與原始文字目標，並在無效／錯誤焦點 HWND 時禁止注入；
+- history 寫入失敗、fallback clipboard 失敗與多重非致命錯誤不得靜默遺失。
+
+## Release and package checks
+
+- `scripts/check.ps1` 已以模擬 native exit code 37 驗證會在第一個失敗 gate 正確停止。
+- `scripts/build-release.ps1` 已以模擬 native exit code 41 驗證不會把失敗建置當成成功。
+- `scripts/package-portable.ps1` 已以 staging 中預放 stale `config.toml` 做回歸測試；重新打包後該檔未進入 ZIP。
+- portable ZIP 僅含 `SpeakTypeCloud.exe`、`QUICKSTART.txt`、README、SECURITY 與 API provider 文件。
+- source secret scan 未發現符合長格式 `sk-`／`xai-` 的內容。
+
+## Windows 10 smoke
+
+- `SpeakTypeCloud.exe` 啟動 3 秒後仍存活且 `Responding=True`，通過啟動 smoke。
+- 本輪未提供真實 OpenAI／xAI API Key，因此未送出付費請求。
+
+## Pending external acceptance
+
+以下項目需要額外環境或使用者憑證，尚未宣稱通過：
+
+1. Windows 11 完整 gate 與啟動 smoke。
+2. 以真實 OpenAI 與 xAI Key 做端到端錄音／辨識。
+3. Notepad、Chrome／Edge、VS Code、Word／Excel 的實際 Ctrl+V 注入矩陣。
+4. 提升權限與非提升權限視窗之間的注入限制。
+5. 圖片／複合格式剪貼簿還原行為；目前設計只保證文字剪貼簿。

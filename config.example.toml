@@ -1,0 +1,30 @@
+provider = "open_ai"
+language = "zh"
+prompt = "使用繁體中文標點；保留專有名詞、英文縮寫與程式碼名稱。"
+hotkey = "Ctrl+Shift+Space"
+hold_to_record = true
+save_recordings = false
+
+[openai]
+base_url = "https://api.openai.com"
+model = "gpt-4o-mini-transcribe"
+api_key_env = "OPENAI_API_KEY"
+
+[xai]
+base_url = "https://api.x.ai"
+api_key_env = "XAI_API_KEY"
+format_text = true
+keyterms = ["OpenAI", "xAI", "Codex", "OpenCode"]
+
+[recording]
+input_device_name = ""
+gain = 1.0
+min_duration_ms = 300
+max_duration_secs = 120
+
+[output]
+auto_inject = true
+restore_clipboard = true
+preserve_target_window = true
+copy_only_on_injection_failure = true
+append_space = false

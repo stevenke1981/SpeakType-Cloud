@@ -1,0 +1,13 @@
+/target/
+/dist/
+/.codebase-memory/
+/.codex/evolution/state/
+/config.toml
+/data/
+*.wav
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
