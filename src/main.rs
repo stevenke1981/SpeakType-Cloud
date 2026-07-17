@@ -4,6 +4,7 @@ mod app;
 mod audio;
 mod config;
 mod error;
+mod fonts;
 mod history;
 mod hotkey;
 mod injector;
@@ -26,6 +27,11 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "SpeakType Cloud",
         options,
-        Box::new(|cc| Box::new(SpeakTypeCloudApp::new(cc))),
+        Box::new(|cc| {
+            if let Err(error) = fonts::install_cjk_font(&cc.egui_ctx) {
+                eprintln!("{error}");
+            }
+            Box::new(SpeakTypeCloudApp::new(cc))
+        }),
     )
 }
