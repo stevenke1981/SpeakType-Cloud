@@ -36,7 +36,6 @@ pub fn install(ctx: &egui::Context) {
     );
 
     style.visuals = egui::Visuals::light();
-    style.visuals.override_text_color = Some(text);
     style.visuals.panel_fill = background;
     style.visuals.window_fill = card;
     style.visuals.extreme_bg_color = field;
@@ -47,7 +46,7 @@ pub fn install(ctx: &egui::Context) {
     style.visuals.window_rounding = egui::Rounding::same(18.0);
     style.visuals.menu_rounding = egui::Rounding::same(14.0);
 
-    style.visuals.widgets.noninteractive.bg_fill = egui::Color32::TRANSPARENT;
+    style.visuals.widgets.noninteractive.bg_fill = card;
     style.visuals.widgets.noninteractive.weak_bg_fill = egui::Color32::TRANSPARENT;
     style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, border);
     style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, text);
