@@ -5,12 +5,14 @@ pub fn hydrate_process_environment(config: &AppConfig) -> AppResult<()> {
     #[cfg(target_os = "windows")]
     {
         for env_name in [&config.openai.api_key_env, &config.xai.api_key_env] {
-            if !is_api_key_configured(env_name) {
-                if let Some(api_key) = read_user_environment(env_name)? {
-                    if !api_key.trim().is_empty() {
-                        std::env::set_var(env_name, api_key);
-                    }
-                }
+            if is_api_key_configured(env_name) {
+                continue;
+            }
+            let Some(api_key) = read_user_environment(env_name)? else {
+                continue;
+            };
+            if !api_key.trim().is_empty() {
+                std::env::set_var(env_name, api_key);
             }
         }
     }
