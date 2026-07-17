@@ -13,14 +13,29 @@
 
 ## API Key
 
-程式不把 API Key 寫入 `config.toml`，只讀環境變數。
+程式右上角提供 **「API 金鑰」** 按鈕，可直接在 GUI 中設定 OpenAI 與 xAI API Key：
+
+1. 點選右上角「API 金鑰」。
+2. 將金鑰貼到對應供應商欄位。
+3. 點選「儲存 OpenAI Key」或「儲存 xAI Key」。
+4. 面板會顯示「已設定」狀態；也可隨時清除。
+
+金鑰不會寫入 `config.toml`。Windows 版會將它保存於目前使用者的環境變數（`HKCU\Environment`），並同步到目前執行中的程式。GUI 輸入預設使用密碼遮蔽。
+
+也可以繼續使用 PowerShell 手動設定：
 
 ```powershell
 [Environment]::SetEnvironmentVariable("OPENAI_API_KEY", "sk-...", "User")
 [Environment]::SetEnvironmentVariable("XAI_API_KEY", "xai-...", "User")
 ```
 
-設定後請重新登入 Windows 或重新啟動啟動器／終端機。
+手動設定後請重新登入 Windows，或重新啟動啟動器／終端機。
+
+## 介面
+
+- 使用 Apple-inspired 淺色視覺：柔和灰色背景、白色卡片、較大圓角與清楚的字級層次。
+- API Key 設定使用獨立浮動面板，不干擾主要錄音與辨識操作。
+- Windows 啟動時自動載入可用的 CJK 系統字型，支援繁體中文介面。
 
 ## 開發建置
 
@@ -49,8 +64,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package-portable.ps1
 
 ## 驗證狀態
 
-- Windows 10 22H2、Rust 1.96.0 stable MSVC：fmt、clippy、32 tests、release build 與啟動 smoke 通過。
+- Windows 10 22H2、Rust 1.96.0 stable MSVC：fmt、clippy、32 tests、release build 與啟動 smoke 曾通過。
 - OpenAI／xAI adapters 使用離線 mock server 驗證，不需要也不消耗真實 API Key。
 - Windows 11、真實 provider 與 Notepad／瀏覽器／VS Code／Office 注入矩陣仍列於 `TODOS.md`，尚未宣稱通過。
+- GUI API Key 與新版主題加入後需要重新執行上述 Windows 建置與 smoke test。
 
 詳見 `SPEC.md`、`ARCHITECTURE.md`、`SECURITY.md` 與 `TEST.md`。
