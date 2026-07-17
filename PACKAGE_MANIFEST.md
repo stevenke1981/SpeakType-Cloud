@@ -9,7 +9,7 @@ This manifest lists every non-ignored source file except itself. Build outputs u
 | `.codex/evolution/LESSONS.md` | 629 | `de28afe910c56cce5f1229f24345f8218ae1ec083e7adfc2856b323bf5b3e034` |
 | `.codex/evolution/reviews/2026-07-17T14-08-57Z-speaktype-cloud-release.md` | 2719 | `11f836a33141e69a3fa34ced8ecd88c1c90bc6e1ae299327961cc545b74e2a74` |
 | `.env.example` | 29 | `7fb46c14efca1cbc7f754ffecf9a5f5addf2953a50c3f9b38441dfa65e801fda` |
-| `.github/workflows/windows.yml` | 437 | `e7ad27154b4368bc99fdad65387af46a4e92cff2aa8f53d40169b088d8c8d3f5` |
+| `.github/workflows/windows.yml` | 437 | `d93d57ea65ff40bf178933e05a0abedb035a12f35cc969e99ee3b5905842b624` |
 | `.gitignore` | 138 | `830c08bb70dbac538360e91f0e27a37bbed24b370e85c9105633f53889517faf` |
 | `AGENTS.md` | 1289 | `a8890ae735209c1b50850ed85b7717c24d427a663e981addc80062672239a013` |
 | `API_PROVIDERS.md` | 804 | `5f57e0f783e40b165d3c9d8309e2c9c96d74129c3a20c9e039f28c7c32f682cc` |
