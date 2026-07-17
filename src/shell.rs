@@ -249,7 +249,7 @@ impl AppleShell {
                     KeyAction::Clear(_) => {}
                 }
                 let verb = match action {
-                    KeyAction::Save(_) => "已安全儲存",
+                    KeyAction::Save(_) => "已儲存",
                     KeyAction::Clear(_) => "已清除",
                 };
                 self.key_message = Some(KeyMessage {
