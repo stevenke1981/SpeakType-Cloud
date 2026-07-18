@@ -25,10 +25,9 @@ pub fn install_cjk_font(ctx: &egui::Context) -> Result<PathBuf, String> {
 
 fn font_definitions_with_cjk(bytes: Vec<u8>) -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        CJK_FONT_KEY.to_owned(),
-        egui::FontData::from_owned(bytes),
-    );
+    fonts
+        .font_data
+        .insert(CJK_FONT_KEY.to_owned(), egui::FontData::from_owned(bytes));
 
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
         fonts

@@ -8,10 +8,33 @@ pub enum AppError {
     Configuration(String),
     #[error("語音辨識失敗：{0}")]
     Transcription(String),
+    #[error("語音辨識失敗：{message}")]
+    Provider { message: String, retryable: bool },
+    #[error("辨識工作已取消")]
+    Cancelled,
     #[error("文字注入失敗：{0}")]
     Injection(String),
     #[error("檔案錯誤：{0}")]
     Io(String),
+}
+
+impl AppError {
+    pub fn provider(message: impl Into<String>, retryable: bool) -> Self {
+        Self::Provider {
+            message: message.into(),
+            retryable,
+        }
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::Provider {
+                retryable: true,
+                ..
+            }
+        )
+    }
 }
 
 pub type AppResult<T> = Result<T, AppError>;

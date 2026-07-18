@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "github_actions": [
+    {
+      "repository": "actions/checkout",
+      "version": "v6.0.2",
+      "commit": "de0fac2e4500dabe0009e67214ff5f5447ce83dd"
+    },
+    {
+      "repository": "actions/upload-artifact",
+      "version": "v7.0.1",
+      "commit": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+    },
+    {
+      "repository": "Swatinem/rust-cache",
+      "version": "v2.8.1",
+      "commit": "f13886b937689c021905a6b90929199931d60db1"
+    },
+    {
+      "repository": "dtolnay/rust-toolchain",
+      "ref": "master",
+      "commit": "2c7215f132e9ebf062739d9130488b56d53c060c"
+    }
+  ],
+  "build_tools": [
+    {
+      "name": "NSIS Chocolatey package",
+      "version": "3.12.0",
+      "metadata_source": "https://community.chocolatey.org/api/v2/",
+      "packages": [
+        {
+          "id": "nsis",
+          "package_url": "https://community.chocolatey.org/api/v2/package/nsis/3.12.0",
+          "expected_sha256": "1f8188982f2dead05fb529654f490c5feee1af257dd340d1e37223109ae52ca7",
+          "audited_actual_sha256": "1f8188982f2dead05fb529654f490c5feee1af257dd340d1e37223109ae52ca7",
+          "metadata_sha512": "a3c4334db673d8b77be449af1c0ee5cc244019bcac8777aeee509f14b7e496c22a98cc775a6b0f0a6148709502f04f82f1ae848acd67c724fe62a5383a37f0f5",
+          "audited_actual_sha512": "a3c4334db673d8b77be449af1c0ee5cc244019bcac8777aeee509f14b7e496c22a98cc775a6b0f0a6148709502f04f82f1ae848acd67c724fe62a5383a37f0f5"
+        },
+        {
+          "id": "nsis.install",
+          "package_url": "https://community.chocolatey.org/api/v2/package/nsis.install/3.12.0",
+          "expected_sha256": "4a1bbf9987e5b9b6bda4c2433af62bb79f2d9d3bd67b392f29a069ecda8c5f64",
+          "audited_actual_sha256": "4a1bbf9987e5b9b6bda4c2433af62bb79f2d9d3bd67b392f29a069ecda8c5f64",
+          "metadata_sha512": "e7057af08ff9c5a644e97ad71228af38edd1cb77a5e2bd92107a63a26f3b58459076ea6ba153bd00a07069024b52f260742172f54c5ad1430c66522038fb9bdb",
+          "audited_actual_sha512": "e7057af08ff9c5a644e97ad71228af38edd1cb77a5e2bd92107a63a26f3b58459076ea6ba153bd00a07069024b52f260742172f54c5ad1430c66522038fb9bdb"
+        }
+      ]
+    }
+  ]
+}

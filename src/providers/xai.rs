@@ -1,9 +1,9 @@
 use super::{
-    nonempty_transcript, sanitized_error_body, ProviderRequest, ProviderResponse,
-    SpeechToTextProvider,
+    nonempty_transcript, retryable_http_status, retryable_transport_error, sanitized_error_body,
+    ProviderRequest, ProviderResponse, SpeechToTextProvider,
 };
 use crate::error::{AppError, AppResult};
-use reqwest::blocking::{multipart, Client};
+use reqwest::{multipart, Client};
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -44,8 +44,9 @@ impl XaiProvider {
     }
 }
 
+#[async_trait::async_trait]
 impl SpeechToTextProvider for XaiProvider {
-    fn transcribe(&self, request: ProviderRequest) -> AppResult<ProviderResponse> {
+    async fn transcribe(&self, request: ProviderRequest) -> AppResult<ProviderResponse> {
         // xAI 要求 file 欄位置於其他 multipart 欄位之後。
         let language = request.language.filter(|v| supports_xai_formatting(v));
         let mut form = multipart::Form::new();
@@ -77,16 +78,24 @@ impl SpeechToTextProvider for XaiProvider {
             .bearer_auth(&self.api_key)
             .multipart(form)
             .send()
-            .map_err(|e| AppError::Transcription(network_message(&e)))?;
+            .await
+            .map_err(|error| {
+                let retryable = retryable_transport_error(&error);
+                AppError::provider(network_message(&error), retryable)
+            })?;
         let status = response.status();
         let body = response
             .text()
+            .await
             .map_err(|e| AppError::Transcription(e.to_string()))?;
         if !status.is_success() {
-            return Err(AppError::Transcription(format!(
-                "xAI HTTP {status}: {}",
-                sanitized_error_body(&body, &self.api_key)
-            )));
+            return Err(AppError::provider(
+                format!(
+                    "xAI HTTP {status}: {}",
+                    sanitized_error_body(&body, &self.api_key)
+                ),
+                retryable_http_status(status),
+            ));
         }
         let parsed: XaiResponse = serde_json::from_str(&body)
             .map_err(|e| AppError::Transcription(format!("xAI 回應格式錯誤：{e}")))?;
@@ -158,8 +167,8 @@ mod tests {
         assert!(supports_xai_formatting("ja"));
     }
 
-    #[test]
-    fn multipart_file_field_is_last() {
+    #[tokio::test]
+    async fn multipart_file_field_is_last() {
         let (base_url, captured) = serve_once(
             "200 OK",
             r#"{"text":"hello","duration":1.25}"#,
@@ -174,7 +183,10 @@ mod tests {
         )
         .expect("provider");
 
-        let response = provider.transcribe(request("en")).expect("transcription");
+        let response = provider
+            .transcribe(request("en"))
+            .await
+            .expect("transcription");
         let raw_request = captured.recv().expect("captured request");
         let format_pos = raw_request.find(r#"name="format""#).expect("format field");
         let language_pos = raw_request
@@ -200,8 +212,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn rejects_empty_transcript() {
+    #[tokio::test]
+    async fn rejects_empty_transcript() {
         let (base_url, _) = serve_once("200 OK", r#"{"text":"","duration":null}"#, Duration::ZERO);
         let provider = XaiProvider::new(
             base_url,
@@ -214,14 +226,15 @@ mod tests {
 
         let error = provider
             .transcribe(request("zh"))
+            .await
             .expect_err("empty transcript must fail")
             .to_string();
 
         assert!(error.contains("空白"), "unexpected error: {error}");
     }
 
-    #[test]
-    fn http_error_does_not_expose_api_key() {
+    #[tokio::test]
+    async fn http_error_does_not_expose_api_key() {
         let api_key = "provider-test-secret-error-redaction";
         let body = format!(r#"{{"error":"denied {api_key}"}}"#);
         let (base_url, _) = serve_once("429 Too Many Requests", &body, Duration::ZERO);
@@ -236,15 +249,17 @@ mod tests {
 
         let error = provider
             .transcribe(request("en"))
-            .expect_err("HTTP error expected")
-            .to_string();
+            .await
+            .expect_err("HTTP error expected");
+        assert!(error.is_retryable());
+        let error = error.to_string();
 
         assert!(error.contains("429"), "unexpected error: {error}");
         assert!(!error.contains(api_key));
     }
 
-    #[test]
-    fn timeout_is_classified() {
+    #[tokio::test]
+    async fn timeout_is_classified() {
         let (base_url, _) = serve_once(
             "200 OK",
             r#"{"text":"late","duration":null}"#,
@@ -261,8 +276,10 @@ mod tests {
 
         let error = provider
             .transcribe(request("en"))
-            .expect_err("timeout expected")
-            .to_string();
+            .await
+            .expect_err("timeout expected");
+        assert!(error.is_retryable());
+        let error = error.to_string();
 
         assert!(error.contains("逾時"), "unexpected error: {error}");
     }

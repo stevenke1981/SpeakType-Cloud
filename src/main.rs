@@ -11,10 +11,15 @@ mod injector;
 mod paths;
 mod postprocess;
 mod providers;
+mod realtime;
+mod realtime_worker;
 mod secrets;
 mod shell;
+mod startup;
 mod theme;
 mod transcription;
+mod updater;
+mod vad;
 
 use shell::AppleShell;
 

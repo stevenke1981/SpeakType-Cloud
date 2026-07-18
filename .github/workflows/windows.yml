@@ -1,18 +1,124 @@
 name: windows
+
 on:
   push:
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master 2026-07-18
         with:
+          toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all-targets
-      - run: cargo build --release
+      - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+      - name: Check, test, and build release
+        shell: pwsh
+        run: .\scripts\check.ps1
+
+  unsigned-release-artifacts:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master 2026-07-18
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+      - name: Install pinned NSIS build tool
+        shell: pwsh
+        run: .\scripts\install-nsis-build-tool.ps1
+      - name: Build unsigned installer
+        shell: pwsh
+        run: .\scripts\build-installer.ps1
+      - name: Generate and validate CycloneDX SBOM
+        shell: pwsh
+        run: .\scripts\generate-sbom.ps1
+      - name: Upload unsigned candidates (not auto-update-ready)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SpeakTypeCloud-windows-unsigned-not-auto-update-ready
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/release/SpeakTypeCloud.exe
+            dist/release/SpeakTypeCloud.ico
+            dist/installer/SpeakTypeCloud-Setup-*.exe
+            dist/sbom/SpeakTypeCloud.cdx.json
+            installer/release-provenance.json
+
+  signed-tag-artifacts:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: windows-latest
+    env:
+      SPEAKTYPE_UPDATE_SIGNER_CERT_SHA256: ${{ vars.UPDATE_SIGNER_CERT_SHA256 }}
+      SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+      SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master 2026-07-18
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+      - name: Require release signing inputs
+        shell: pwsh
+        run: |
+          if ($env:SPEAKTYPE_UPDATE_SIGNER_CERT_SHA256 -notmatch '^[0-9A-Fa-f]{64}$') { throw "UPDATE_SIGNER_CERT_SHA256 must be a SHA-256 certificate fingerprint" }
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_PFX_BASE64)) { throw "WINDOWS_SIGNING_PFX_BASE64 is required for signed tag artifacts" }
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_PFX_PASSWORD)) { throw "WINDOWS_SIGNING_PFX_PASSWORD is required for signed tag artifacts" }
+          $pfx = Join-Path $env:RUNNER_TEMP 'SpeakTypeCloud-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_PFX_BASE64))
+          "SIGNING_PFX_PATH=$pfx" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Install pinned NSIS build tool
+        shell: pwsh
+        run: .\scripts\install-nsis-build-tool.ps1
+      - name: Build updater with pinned signer trust root
+        shell: pwsh
+        run: .\scripts\build-release.ps1
+      - name: Sign application before packaging
+        shell: pwsh
+        run: .\scripts\sign-artifacts.ps1 -Path .\dist\release\SpeakTypeCloud.exe -PfxPath $env:SIGNING_PFX_PATH -PasswordEnv SIGNING_PFX_PASSWORD -ExpectedSignerCertSha256 $env:SPEAKTYPE_UPDATE_SIGNER_CERT_SHA256
+      - name: Package the signed application
+        shell: pwsh
+        run: .\scripts\build-installer.ps1 -SkipBuild
+      - name: Sign installer
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -LiteralPath .\dist\installer -Filter "SpeakTypeCloud-Setup-*.exe" -File)
+          if ($installers.Count -ne 1) { throw "Expected exactly one installer, found $($installers.Count)" }
+          .\scripts\sign-artifacts.ps1 -Path $installers[0].FullName -PfxPath $env:SIGNING_PFX_PATH -PasswordEnv SIGNING_PFX_PASSWORD -ExpectedSignerCertSha256 $env:SPEAKTYPE_UPDATE_SIGNER_CERT_SHA256
+      - name: Generate manifest only after installer signing
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -LiteralPath .\dist\installer -Filter "SpeakTypeCloud-Setup-*.exe" -File)
+          if ($installers.Count -ne 1) { throw "Expected exactly one installer, found $($installers.Count)" }
+          .\scripts\new-update-manifest.ps1 -InstallerPath $installers[0].FullName
+      - name: Generate and validate CycloneDX SBOM
+        shell: pwsh
+        run: .\scripts\generate-sbom.ps1
+      - name: Upload signed auto-update-ready candidates
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SpeakTypeCloud-windows-signed-auto-update-ready
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/release/SpeakTypeCloud.exe
+            dist/release/SpeakTypeCloud.ico
+            dist/installer/SpeakTypeCloud-Setup-*.exe
+            dist/installer/update-manifest.json
+            dist/sbom/SpeakTypeCloud.cdx.json
+            installer/release-provenance.json
+      - name: Remove temporary signing material
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:SIGNING_PFX_PATH -and (Test-Path -LiteralPath $env:SIGNING_PFX_PATH)) {
+            Remove-Item -LiteralPath $env:SIGNING_PFX_PATH -Force
+          }

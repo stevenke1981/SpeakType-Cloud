@@ -1,9 +1,34 @@
 provider = "open_ai"
+transcription_mode = "batch_ptt" # batch_ptt | realtime_ptt | continuous_dictation
 language = "zh"
 prompt = "使用繁體中文標點；保留專有名詞、英文縮寫與程式碼名稱。"
 hotkey = "Ctrl+Shift+Space"
 hold_to_record = true
+launch_at_login = false
 save_recordings = false
+
+[text_processing]
+normalize_chinese_punctuation = true
+chinese_variant = "preserve" # preserve | traditional | simplified
+voice_commands_enabled = false
+
+[[text_processing.dictionary]]
+source = "Open AI"
+replacement = "OpenAI"
+
+[[text_processing.voice_commands]]
+phrase = "插入換行"
+action = "insert_text"
+text = "\n"
+
+[[text_processing.voice_commands]]
+phrase = "只複製安全文字"
+action = "copy_only"
+text = "安全文字"
+
+[[text_processing.voice_commands]]
+phrase = "取消輸出"
+action = "discard"
 
 [openai]
 base_url = "https://api.openai.com"
@@ -21,6 +46,18 @@ input_device_name = ""
 gain = 1.0
 min_duration_ms = 300
 max_duration_secs = 120
+
+[realtime]
+openai_model = "gpt-realtime-whisper"
+openai_transcription_delay = "medium"
+xai_smart_turn_enabled = false
+xai_smart_turn_threshold = 0.7
+xai_smart_turn_timeout_ms = 3000
+vad_rms_threshold = 0.025
+vad_pre_roll_ms = 300
+vad_min_speech_ms = 200
+vad_silence_ms = 700
+max_utterance_secs = 60
 
 [output]
 auto_inject = true

@@ -20,7 +20,7 @@
 3. 點選「儲存 OpenAI Key」或「儲存 xAI Key」。
 4. 面板會顯示「已設定」狀態；也可隨時清除。
 
-金鑰不會寫入 `config.toml`。Windows 版會將它保存於目前使用者的環境變數（`HKCU\Environment`），並同步到目前執行中的程式。GUI 輸入預設使用密碼遮蔽。
+金鑰不會寫入 `config.toml`。Windows 版會將 GUI 儲存的金鑰放入 Windows Credential Manager（目標名稱 `SpeakTypeCloud:<環境變數名稱>`），並只在目前程序中載入供 provider 使用。舊版 `HKCU\Environment` 值只會複製匯入，絕不刪除或改寫，以免影響其他程式。GUI 輸入預設使用密碼遮蔽。
 
 也可以繼續使用 PowerShell 手動設定：
 
@@ -36,6 +36,8 @@
 - 使用 Apple-inspired 淺色視覺：柔和灰色背景、白色卡片、較大圓角與清楚的字級層次。
 - API Key 設定使用獨立浮動面板，不干擾主要錄音與辨識操作。
 - Windows 啟動時自動載入可用的 CJK 系統字型，支援繁體中文介面。
+- 可隱藏至 Windows 系統匣，並選擇登入時自動啟動。
+- 辨識模式可選 Batch PTT（預設）、Realtime PTT 或 Continuous Dictation；即時模式只有在使用者明確開始後才會錄音。
 
 ## 開發建置
 
@@ -52,21 +54,26 @@ Release：
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\package-portable.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\generate-sbom.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1 -ValidateOnly
 ```
+
+NSIS 安裝器建置、Authenticode 簽署與安全更新 manifest 詳見 `scripts/`。自動更新只有在建置時提供 `SPEAKTYPE_UPDATE_SIGNER_CERT_SHA256`，且下載的 installer 通過 SHA-256、有效 Authenticode 與簽署憑證 pin 時才會啟用；未設定 trust root 時只提供手動 Releases 連結。
 
 ## 目前範圍
 
 - Windows 10/11 優先。
-- v1 使用「放開後批次辨識」，不是即時逐字串流。
+- Batch PTT 保持預設；P2 另提供明確 opt-in 的 OpenAI／xAI WebSocket 即時字幕與連續聽寫。
 - OpenAI 預設模型為 `gpt-4o-mini-transcribe`，可在設定中修改。
 - xAI 使用 `/v1/stt`；繁體中文輸入時不送 xAI 的 `language=format` 參數，避免套用不在格式化清單中的語言碼，但仍會進行語音辨識。
-- 程式不包含 API Key，也不包含編譯後 EXE。
+- OpenAI realtime 使用 `gpt-realtime-whisper`、24 kHz PCM 與本機 VAD；xAI realtime 使用 `/v1/stt`、16 kHz PCM，可選 Smart Turn。
+- 程式不包含 API Key，也不提交編譯後 EXE、installer、SBOM output 或 `dist/` artifacts。
 
 ## 驗證狀態
 
-- Windows 10 22H2、Rust 1.96.0 stable MSVC：fmt、clippy、32 tests、release build 與啟動 smoke 曾通過。
+- Windows 10 22H2、Rust 1.96.0 stable MSVC：fmt、Clippy、98 tests、release build 與既有 batch 啟動 smoke 通過。
 - OpenAI／xAI adapters 使用離線 mock server 驗證，不需要也不消耗真實 API Key。
 - Windows 11、真實 provider 與 Notepad／瀏覽器／VS Code／Office 注入矩陣仍列於 `TODOS.md`，尚未宣稱通過。
-- GUI API Key 與新版主題加入後需要重新執行上述 Windows 建置與 smoke test。
+- P1/P2 以離線 HTTP／WebSocket mock、VAD、音訊 backpressure、取消、更新供應鏈與 release static tests 驗證；真實 realtime provider、實體麥克風與安裝器互動 smoke 仍待外部環境。
 
 詳見 `SPEC.md`、`ARCHITECTURE.md`、`SECURITY.md` 與 `TEST.md`。

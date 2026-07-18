@@ -1,6 +1,6 @@
 # Test and Acceptance Record
 
-驗證日期：2026-07-17<br>
+驗證日期：2026-07-18<br>
 驗證主機：Windows 10 22H2（10.0.19045）、Rust 1.96.0 stable MSVC
 
 ## Automated gate
@@ -16,7 +16,7 @@ $env:PATH = "C:\Users\steven\.cargo\bin;$env:PATH"
 
 - `cargo fmt --check`：通過。
 - `cargo clippy --all-targets --all-features -- -D warnings`：通過。
-- `cargo test --all-targets`：32 passed、0 failed。
+- `cargo test --all-targets`：98 passed、0 failed。
 - `cargo build --release`：通過。
 - `scripts/check.ps1`：exit 0。
 
@@ -30,6 +30,14 @@ $env:PATH = "C:\Users\steven\.cargo\bin;$env:PATH"
 - xAI timeout、429、空結果、中文 formatting 行為，以及 `file` 為 multipart 最後欄位；
 - 排除 SpeakType 自身 HWND、保存最後外部視窗與原始文字目標，並在無效／錯誤焦點 HWND 時禁止注入；
 - history 寫入失敗、fallback clipboard 失敗與多重非致命錯誤不得靜默遺失。
+- Windows Credential Manager 匯入、外部環境變數保留、空白 credential 與遷移失敗不遺失 key；
+- 系統匣 close／exit 決策、登入自啟 registry transaction 與 hotkey runtime rollback；
+- 408／429／5xx 有界 backoff、真正中止 in-flight async HTTP、JobId／channel stale-result 隔離；
+- 中文標點、OpenCC 繁簡、非遞迴詞典與完整匹配語音命令；
+- OpenAI／xAI mock WebSocket handshake、協定欄位、auth redaction、partial／final、commit ordering、Smart Turn 三態與大小限制；
+- 固定容量 live audio、backpressure/drop 統計、44.1 kHz stateful resampling、固定 10 ms VAD frame、pre-roll／silence／max endpoint；
+- Realtime PTT／Continuous 狀態、取消與 worker join、明確 batch fallback；
+- 更新 URL allowlist、chunked response 上限、SHA-256、Authenticode signer pin 與三階段 UI gate。
 
 ## Release and package checks
 
@@ -38,6 +46,10 @@ $env:PATH = "C:\Users\steven\.cargo\bin;$env:PATH"
 - `scripts/package-portable.ps1` 已以 staging 中預放 stale `config.toml` 做回歸測試；重新打包後該檔未進入 ZIP。
 - portable ZIP 僅含 `SpeakTypeCloud.exe`、`QUICKSTART.txt`、README、SECURITY 與 API provider 文件。
 - source secret scan 未發現符合長格式 `sk-`／`xai-` 的內容。
+- `scripts/test-release.ps1`、NSIS template、SBOM schema、PowerShell syntax 與 workflow static checks 通過。
+- CycloneDX SBOM 連續兩次生成 SHA-256 相同。
+- NSIS 3.12.0 與 `nsis.install` nupkg 使用 repo-tracked SHA-256 固定；GitHub Actions 使用完整 commit SHA。
+- 本機有 `signtool.exe`，但沒有 code-signing certificate；unsigned verify 會拒絕，未宣稱已簽。
 
 ## Windows 10 smoke
 
@@ -53,3 +65,4 @@ $env:PATH = "C:\Users\steven\.cargo\bin;$env:PATH"
 3. Notepad、Chrome／Edge、VS Code、Word／Excel 的實際 Ctrl+V 注入矩陣。
 4. 提升權限與非提升權限視窗之間的注入限制。
 5. 圖片／複合格式剪貼簿還原行為；目前設計只保證文字剪貼簿。
+6. 真實 OpenAI／xAI realtime、實體麥克風、tray 點擊、Credential Manager／HKCU Run 與 NSIS 安裝／更新 smoke。

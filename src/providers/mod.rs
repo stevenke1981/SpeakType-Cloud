@@ -21,23 +21,13 @@ pub struct ProviderResponse {
     pub model: Option<String>,
 }
 
+#[async_trait::async_trait]
 pub trait SpeechToTextProvider: Send + Sync {
-    fn transcribe(&self, request: ProviderRequest) -> AppResult<ProviderResponse>;
+    async fn transcribe(&self, request: ProviderRequest) -> AppResult<ProviderResponse>;
 }
 
 pub fn build_provider(config: &AppConfig) -> AppResult<Box<dyn SpeechToTextProvider>> {
-    let api_key_env = config.api_key_env();
-    let api_key = std::env::var(api_key_env).map_err(|_| {
-        AppError::Configuration(format!(
-            "找不到環境變數 {}。請先設定 API Key，再重新啟動程式。",
-            api_key_env
-        ))
-    })?;
-    if api_key.trim().is_empty() {
-        return Err(AppError::Configuration(format!(
-            "環境變數 {api_key_env} 未包含 API Key。請設定後再重新啟動程式。"
-        )));
-    }
+    let api_key = load_api_key(config)?;
     let timeout = Duration::from_secs(150);
     match config.provider {
         ProviderKind::OpenAi => Ok(Box::new(openai::OpenAiProvider::new(
@@ -56,6 +46,22 @@ pub fn build_provider(config: &AppConfig) -> AppResult<Box<dyn SpeechToTextProvi
     }
 }
 
+pub(crate) fn load_api_key(config: &AppConfig) -> AppResult<String> {
+    let api_key_env = config.api_key_env();
+    let api_key = std::env::var(api_key_env).map_err(|_| {
+        AppError::Configuration(format!(
+            "找不到環境變數 {}。請先設定 API Key，再重新啟動程式。",
+            api_key_env
+        ))
+    })?;
+    if api_key.trim().is_empty() {
+        return Err(AppError::Configuration(format!(
+            "環境變數 {api_key_env} 未包含 API Key。請設定後再重新啟動程式。"
+        )));
+    }
+    Ok(api_key)
+}
+
 fn nonempty_transcript(text: String) -> AppResult<String> {
     if text.trim().is_empty() {
         Err(AppError::Transcription("API 回傳空白辨識結果".to_string()))
@@ -71,6 +77,18 @@ fn sanitized_error_body(body: &str, api_key: &str) -> String {
         body.replace(api_key, "[REDACTED]")
     };
     redacted.chars().take(800).collect()
+}
+
+fn retryable_http_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+}
+
+fn retryable_transport_error(error: &reqwest::Error) -> bool {
+    error.is_timeout()
+        || error.is_connect()
+        || (error.is_request() && !error.is_builder() && !error.is_redirect())
 }
 
 #[cfg(test)]
@@ -153,5 +171,19 @@ pub(super) mod test_support {
         std::env::remove_var(variable);
 
         assert!(error.contains(variable));
+    }
+
+    #[test]
+    fn retryable_http_statuses_are_limited_to_transient_classes() {
+        for status in [408, 429, 500, 502, 503, 599] {
+            assert!(super::retryable_http_status(
+                reqwest::StatusCode::from_u16(status).expect("status")
+            ));
+        }
+        for status in [400, 401, 403, 404, 409, 422] {
+            assert!(!super::retryable_http_status(
+                reqwest::StatusCode::from_u16(status).expect("status")
+            ));
+        }
     }
 }
