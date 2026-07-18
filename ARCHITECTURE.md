@@ -6,11 +6,13 @@ GlobalHotkey / GUI
         v
     App state ───────────────┬── Batch Recorder -> WAV -> async HTTP worker
         │                    │                    ├─ OpenAI /v1/audio/transcriptions
-        │                    │                    └─ xAI /v1/stt
+        │                    │                    ├─ xAI /v1/stt
+        │                    │                    └─ OpenRouter /v1/audio/transcriptions (JSON base64)
         │                    │
         │                    └── Live capture -> bounded channel -> realtime worker
         │                                         ├─ OpenAI WS /v1/realtime (24 kHz)
         │                                         └─ xAI WS /v1/stt (16 kHz)
+        │                                         (OpenRouter: rejected at validation)
         │                                                  │
         │                                    local VAD / xAI Smart Turn
         v                                                  v

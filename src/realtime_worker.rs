@@ -114,6 +114,12 @@ async fn run(
     cancelled: &AtomicBool,
     output: &mpsc::Sender<WorkerMessage>,
 ) -> Result<(), String> {
+    if config.provider == ProviderKind::OpenRouter {
+        return Err(
+            "OpenRouter 不支援 Realtime 或 Continuous Dictation 模式；請使用 Batch / PTT。"
+                .to_string(),
+        );
+    }
     let api_key = load_api_key(&config).map_err(|error| error.to_string())?;
     let connection = async {
         match config.provider {
@@ -143,6 +149,7 @@ async fn run(
                 realtime::xai::SAMPLE_RATE,
                 1_600,
             )),
+            ProviderKind::OpenRouter => unreachable!(), // caught by early guard above
         }
     };
     let (mut session, sample_rate, frame_samples) = tokio::select! {

@@ -11,6 +11,7 @@ pub const MAX_RECORDING_DURATION_SECS: u64 = 120;
 pub enum ProviderKind {
     OpenAi,
     Xai,
+    OpenRouter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +129,7 @@ impl ProviderKind {
         match self {
             Self::OpenAi => "OpenAI",
             Self::Xai => "xAI",
+            Self::OpenRouter => "OpenRouter",
         }
     }
 }
@@ -166,6 +168,24 @@ impl Default for XaiConfig {
             api_key_env: "XAI_API_KEY".to_string(),
             format_text: true,
             keyterms: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpenRouterConfig {
+    pub base_url: String,
+    pub model: String,
+    pub api_key_env: String,
+}
+
+impl Default for OpenRouterConfig {
+    fn default() -> Self {
+        Self {
+            base_url: "https://openrouter.ai/api".to_string(),
+            model: "openai/gpt-4o-mini-transcribe".to_string(),
+            api_key_env: "OPENROUTER_API_KEY".to_string(),
         }
     }
 }
@@ -257,6 +277,7 @@ pub struct AppConfig {
     pub save_recordings: bool,
     pub openai: OpenAiConfig,
     pub xai: XaiConfig,
+    pub openrouter: OpenRouterConfig,
     pub recording: RecordingConfig,
     pub realtime: RealtimeConfig,
     pub output: OutputConfig,
@@ -276,6 +297,7 @@ impl Default for AppConfig {
             save_recordings: false,
             openai: OpenAiConfig::default(),
             xai: XaiConfig::default(),
+            openrouter: OpenRouterConfig::default(),
             recording: RecordingConfig::default(),
             realtime: RealtimeConfig::default(),
             output: OutputConfig::default(),
@@ -311,6 +333,7 @@ impl AppConfig {
         match self.provider {
             ProviderKind::OpenAi => &self.openai.api_key_env,
             ProviderKind::Xai => &self.xai.api_key_env,
+            ProviderKind::OpenRouter => &self.openrouter.api_key_env,
         }
     }
 
@@ -356,8 +379,20 @@ impl AppConfig {
         if self.provider == ProviderKind::OpenAi && self.openai.model.trim().is_empty() {
             return Err(AppError::Configuration("OpenAI 模型不可為空".to_string()));
         }
+        if self.provider == ProviderKind::OpenRouter && self.openrouter.model.trim().is_empty() {
+            return Err(AppError::Configuration(
+                "OpenRouter 模型不可為空".to_string(),
+            ));
+        }
+        if self.provider == ProviderKind::OpenRouter && self.transcription_mode.is_realtime() {
+            return Err(AppError::Configuration(
+                "OpenRouter 僅支援 Batch / PTT 模式，不支援 Realtime 或 Continuous Dictation"
+                    .to_string(),
+            ));
+        }
         if !is_environment_variable_name(&self.openai.api_key_env)
             || !is_environment_variable_name(&self.xai.api_key_env)
+            || !is_environment_variable_name(&self.openrouter.api_key_env)
         {
             return Err(AppError::Configuration(
                 "API Key 欄位必須是有效的環境變數名稱，不可填入 API Key 本身".to_string(),
@@ -479,6 +514,8 @@ mod tests {
         assert_eq!(config.api_key_env(), "OPENAI_API_KEY");
         config.provider = ProviderKind::Xai;
         assert_eq!(config.api_key_env(), "XAI_API_KEY");
+        config.provider = ProviderKind::OpenRouter;
+        assert_eq!(config.api_key_env(), "OPENROUTER_API_KEY");
     }
 
     #[test]
@@ -499,6 +536,41 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_defaults_are_reasonable() {
+        let config = OpenRouterConfig::default();
+        assert_eq!(config.base_url, "https://openrouter.ai/api");
+        assert_eq!(config.model, "openai/gpt-4o-mini-transcribe");
+        assert_eq!(config.api_key_env, "OPENROUTER_API_KEY");
+    }
+
+    #[test]
+    fn openrouter_realtime_is_rejected() {
+        let mut config = AppConfig {
+            provider: ProviderKind::OpenRouter,
+            transcription_mode: TranscriptionMode::RealtimePtt,
+            ..AppConfig::default()
+        };
+        assert!(config.validate().is_err());
+        config.transcription_mode = TranscriptionMode::ContinuousDictation;
+        assert!(config.validate().is_err());
+        config.transcription_mode = TranscriptionMode::BatchPtt;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn openrouter_empty_model_is_rejected() {
+        let config = AppConfig {
+            provider: ProviderKind::OpenRouter,
+            openrouter: OpenRouterConfig {
+                model: "".to_string(),
+                ..OpenRouterConfig::default()
+            },
+            ..AppConfig::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
     fn api_key_fields_must_be_environment_variable_names() {
         let mut config = AppConfig::default();
         config.openai.api_key_env = "provider-test-secret-invalid-one".to_string();
@@ -506,6 +578,10 @@ mod tests {
 
         config.openai.api_key_env = "OPENAI_API_KEY".to_string();
         config.xai.api_key_env = "provider-test-secret-invalid-two".to_string();
+        assert!(config.validate().is_err());
+
+        config.xai.api_key_env = "XAI_API_KEY".to_string();
+        config.openrouter.api_key_env = "provider-test-secret-invalid-three".to_string();
         assert!(config.validate().is_err());
     }
 

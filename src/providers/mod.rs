@@ -1,4 +1,5 @@
 mod openai;
+mod openrouter;
 mod xai;
 
 use crate::config::{AppConfig, ProviderKind};
@@ -41,6 +42,12 @@ pub fn build_provider(config: &AppConfig) -> AppResult<Box<dyn SpeechToTextProvi
             api_key,
             config.xai.format_text,
             config.xai.keyterms.clone(),
+            timeout,
+        )?)),
+        ProviderKind::OpenRouter => Ok(Box::new(openrouter::OpenRouterProvider::new(
+            config.openrouter.base_url.clone(),
+            config.openrouter.model.clone(),
+            api_key,
             timeout,
         )?)),
     }

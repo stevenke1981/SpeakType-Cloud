@@ -16,7 +16,11 @@ pub fn hydrate_process_environment(config: &AppConfig) -> AppResult<()> {
     #[cfg(target_os = "windows")]
     {
         let store = WindowsSecretStore;
-        for env_name in [&config.openai.api_key_env, &config.xai.api_key_env] {
+        for env_name in [
+            &config.openai.api_key_env,
+            &config.xai.api_key_env,
+            &config.openrouter.api_key_env,
+        ] {
             hydrate_key_with_store(&store, env_name, legacy_migration_allowed(env_name))?;
         }
     }

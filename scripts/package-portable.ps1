@@ -21,7 +21,7 @@ try {
     Copy-Item "$root\README.md","$root\SECURITY.md","$root\API_PROVIDERS.md" "$stage\docs"
     @"
 1. Run SpeakTypeCloud.exe.
-2. Save an OpenAI or xAI API key from the app's Settings page.
+2. Save an OpenAI, xAI, or OpenRouter API key from the app's Settings page.
 3. Hold Ctrl+Shift+Space while speaking, then release.
 "@ | Set-Content "$stage\QUICKSTART.txt" -Encoding UTF8
 

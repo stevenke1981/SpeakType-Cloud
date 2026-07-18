@@ -822,6 +822,11 @@ impl eframe::App for SpeakTypeCloudApp {
                             "OpenAI",
                         );
                         ui.selectable_value(&mut self.config.provider, ProviderKind::Xai, "xAI");
+                        ui.selectable_value(
+                            &mut self.config.provider,
+                            ProviderKind::OpenRouter,
+                            "OpenRouter",
+                        );
                     });
                 ui.horizontal(|ui| {
                     ui.label("語言代碼");
@@ -864,6 +869,24 @@ impl eframe::App for SpeakTypeCloudApp {
                                     }
                                 });
                             ui.label("OpenAI gpt-realtime-whisper 使用本地 VAD，不啟用 server VAD。");
+                        }
+                    }
+                    ProviderKind::OpenRouter => {
+                        ui.horizontal(|ui| {
+                            ui.label("模型");
+                            ui.text_edit_singleline(&mut self.config.openrouter.model);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("API Key 環境變數");
+                            ui.text_edit_singleline(&mut self.config.openrouter.api_key_env);
+                        });
+                        if self.config.transcription_mode.is_realtime() {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(190, 105, 0),
+                                "OpenRouter 僅支援 Batch / PTT 模式。請切換至 Batch / PTT。",
+                            );
+                        } else {
+                            ui.label("OpenRouter 僅支援 Batch / PTT 模式；選用 Realtime 模式時，設定驗證會拒絕。");
                         }
                     }
                     ProviderKind::Xai => {
@@ -1057,12 +1080,13 @@ fn should_stop_for_recording_limit(
 
 fn realtime_settings_fingerprint(config: &AppConfig) -> String {
     format!(
-        "{:?}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "{:?}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         config.provider,
         config.transcription_mode,
         config.language,
         config.openai.api_key_env,
         config.xai.api_key_env,
+        config.openrouter.api_key_env,
         config.realtime.openai_model,
         config.realtime.openai_transcription_delay.as_api_str(),
         config.realtime.xai_smart_turn_enabled,

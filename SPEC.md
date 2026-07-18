@@ -2,7 +2,7 @@
 
 ## 1. 產品目標
 
-建立一個 Windows 桌面語音輸入法：使用者在任意文字輸入視窗按住全域快捷鍵說話，放開後由 OpenAI 或 xAI 辨識，再把文字注入原本使用中的視窗。
+建立一個 Windows 桌面語音輸入法：使用者在任意文字輸入視窗按住全域快捷鍵說話，放開後由 OpenAI、xAI 或 OpenRouter 辨識，再把文字注入原本使用中的視窗。
 
 ## 2. 必要功能
 
@@ -12,6 +12,7 @@
 - 音訊正規化、轉 mono、重採樣到 16 kHz、輸出 PCM16 WAV。
 - OpenAI `/v1/audio/transcriptions` adapter。
 - xAI `/v1/stt` adapter，file 欄位最後加入 multipart。
+- OpenRouter `/v1/audio/transcriptions` JSON base64 adapter（僅 Batch）。
 - OpenAI Realtime transcription 與 xAI WebSocket streaming adapters。
 - Batch PTT 預設、Realtime PTT 與 Continuous Dictation 明確 opt-in。
 - 本機 VAD、xAI Smart Turn、partial 字幕與 ordered final utterances。

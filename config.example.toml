@@ -1,4 +1,4 @@
-provider = "open_ai"
+provider = "open_ai" # open_ai | xai | open_router
 transcription_mode = "batch_ptt" # batch_ptt | realtime_ptt | continuous_dictation
 language = "zh"
 prompt = "使用繁體中文標點；保留專有名詞、英文縮寫與程式碼名稱。"
@@ -40,6 +40,11 @@ base_url = "https://api.x.ai"
 api_key_env = "XAI_API_KEY"
 format_text = true
 keyterms = ["OpenAI", "xAI", "Codex", "OpenCode"]
+
+[openrouter]
+base_url = "https://openrouter.ai/api"
+model = "openai/gpt-4o-mini-transcribe"
+api_key_env = "OPENROUTER_API_KEY"
 
 [recording]
 input_device_name = ""

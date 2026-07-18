@@ -13,6 +13,7 @@ pub struct AppleShell {
     show_api_keys: bool,
     openai_key_edit: String,
     xai_key_edit: String,
+    openrouter_key_edit: String,
     key_message: Option<KeyMessage>,
     startup_warning: Option<String>,
     update_window_open: bool,
@@ -29,6 +30,7 @@ struct KeyMessage {
 enum ProviderKey {
     OpenAi,
     Xai,
+    OpenRouter,
 }
 
 #[derive(Clone, Copy)]
@@ -87,6 +89,7 @@ impl AppleShell {
             show_api_keys: false,
             openai_key_edit: String::new(),
             xai_key_edit: String::new(),
+            openrouter_key_edit: String::new(),
             key_message: None,
             startup_warning,
             update_window_open: false,
@@ -162,7 +165,7 @@ impl AppleShell {
                     .add(egui::Button::new(
                         egui::RichText::new("🔑  API 金鑰").strong(),
                     ))
-                    .on_hover_text("設定 OpenAI 與 xAI API Key")
+                    .on_hover_text("設定 OpenAI、xAI 與 OpenRouter API Key")
                     .clicked()
                 {
                     self.api_key_window_open = true;
@@ -325,18 +328,23 @@ impl AppleShell {
             return;
         }
 
-        let (openai_env, xai_env) = match configured_key_names() {
+        let (openai_env, xai_env, openrouter_env) = match configured_key_names() {
             Ok(names) => names,
             Err(error) => {
                 self.key_message = Some(KeyMessage {
                     success: false,
                     text: error,
                 });
-                ("OPENAI_API_KEY".to_string(), "XAI_API_KEY".to_string())
+                (
+                    "OPENAI_API_KEY".to_string(),
+                    "XAI_API_KEY".to_string(),
+                    "OPENROUTER_API_KEY".to_string(),
+                )
             }
         };
         let openai_configured = secrets::is_api_key_configured(&openai_env);
         let xai_configured = secrets::is_api_key_configured(&xai_env);
+        let openrouter_configured = secrets::is_api_key_configured(&openrouter_env);
         let mut action = None;
         let mut open = self.api_key_window_open;
 
@@ -423,6 +431,39 @@ impl AppleShell {
                 });
 
                 ui.add_space(6.0);
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("OpenRouter").size(17.0).strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let (label, color) = configured_badge(openrouter_configured);
+                            ui.colored_label(color, label);
+                        });
+                    });
+                    ui.label(
+                        egui::RichText::new(format!("環境變數：{openrouter_env}"))
+                            .small()
+                            .color(egui::Color32::from_rgb(110, 110, 115)),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.openrouter_key_edit)
+                            .password(!self.show_api_keys)
+                            .hint_text("貼上 OpenRouter API Key")
+                            .desired_width(f32::INFINITY),
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("儲存 OpenRouter Key").clicked() {
+                            action = Some(KeyAction::Save(ProviderKey::OpenRouter));
+                        }
+                        if ui
+                            .add_enabled(openrouter_configured, egui::Button::new("清除"))
+                            .clicked()
+                        {
+                            action = Some(KeyAction::Clear(ProviderKey::OpenRouter));
+                        }
+                    });
+                });
+
+                ui.add_space(6.0);
                 ui.checkbox(&mut self.show_api_keys, "顯示輸入中的 API Key");
 
                 if let Some(warning) = &self.startup_warning {
@@ -473,8 +514,16 @@ impl AppleShell {
                 config.xai.api_key_env,
                 Some(self.xai_key_edit.trim().to_string()),
             ),
+            KeyAction::Save(ProviderKey::OpenRouter) => (
+                "OpenRouter",
+                config.openrouter.api_key_env,
+                Some(self.openrouter_key_edit.trim().to_string()),
+            ),
             KeyAction::Clear(ProviderKey::OpenAi) => ("OpenAI", config.openai.api_key_env, None),
             KeyAction::Clear(ProviderKey::Xai) => ("xAI", config.xai.api_key_env, None),
+            KeyAction::Clear(ProviderKey::OpenRouter) => {
+                ("OpenRouter", config.openrouter.api_key_env, None)
+            }
         };
 
         let result = match key_value {
@@ -487,6 +536,7 @@ impl AppleShell {
                 match action {
                     KeyAction::Save(ProviderKey::OpenAi) => self.openai_key_edit.clear(),
                     KeyAction::Save(ProviderKey::Xai) => self.xai_key_edit.clear(),
+                    KeyAction::Save(ProviderKey::OpenRouter) => self.openrouter_key_edit.clear(),
                     KeyAction::Clear(_) => {}
                 }
                 let verb = match action {
@@ -667,10 +717,14 @@ impl SystemTray {
     }
 }
 
-fn configured_key_names() -> Result<(String, String), String> {
+fn configured_key_names() -> Result<(String, String, String), String> {
     let config = AppConfig::load().map_err(|error| error.to_string())?;
     config.validate().map_err(|error| error.to_string())?;
-    Ok((config.openai.api_key_env, config.xai.api_key_env))
+    Ok((
+        config.openai.api_key_env,
+        config.xai.api_key_env,
+        config.openrouter.api_key_env,
+    ))
 }
 
 fn configured_badge(configured: bool) -> (&'static str, egui::Color32) {

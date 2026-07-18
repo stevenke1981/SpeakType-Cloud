@@ -2,11 +2,11 @@
 
 ## API Key
 
-- 可從 GUI 的「API 金鑰」面板設定 OpenAI 與 xAI 金鑰。
+- 可從 GUI 的「API 金鑰」面板設定 OpenAI、xAI 與 OpenRouter 金鑰。
 - GUI 輸入預設以密碼模式遮蔽，儲存成功後會立即清空輸入欄位。
 - Windows 版將 GUI 儲存的金鑰保存於 Windows Credential Manager generic credential，目標名稱為 `SpeakTypeCloud:<環境變數名稱>`；啟動後僅載入目前程式的 process environment。
 - `config.toml` 僅保存環境變數名稱，永遠不保存 API Key 本身。
-- 仍支援外部設定 `OPENAI_API_KEY` 或 `XAI_API_KEY`；若目前 process environment 已有值，程式會優先使用該值。
+- 仍支援外部設定 `OPENAI_API_KEY`、`XAI_API_KEY` 或 `OPENROUTER_API_KEY`；若目前 process environment 已有值，程式會優先使用該值。
 - 舊版位於 `HKCU\Environment` 的標準金鑰只會複製匯入 Credential Manager；程式絕不刪除或改寫外部環境變數。
 - GUI 清除只移除 SpeakType Cloud 的 Credential Manager 項目與目前 process environment，不影響其他程式的永久環境設定。
 - 錯誤訊息最多保留 800 個 API response 字元，不記錄 request headers。

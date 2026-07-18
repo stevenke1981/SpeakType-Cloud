@@ -16,7 +16,7 @@ $env:PATH = "C:\Users\steven\.cargo\bin;$env:PATH"
 
 - `cargo fmt --check`：通過。
 - `cargo clippy --all-targets --all-features -- -D warnings`：通過。
-- `cargo test --all-targets`：98 passed、0 failed。
+- `cargo test --all-targets`：107 passed、0 failed。
 - `cargo build --release`：通過。
 - `scripts/check.ps1`：exit 0。
 
@@ -28,6 +28,7 @@ $env:PATH = "C:\Users\steven\.cargo\bin;$env:PATH"
 - hotkey listener bounded startup handshake、立即失敗與 runtime failure UI channel；
 - OpenAI endpoint、必要 multipart 欄位、timeout、401、空結果與 response body secret redaction；
 - xAI timeout、429、空結果、中文 formatting 行為，以及 `file` 為 multipart 最後欄位；
+- OpenRouter JSON base64 endpoint、必要欄位、timeout、401、429、5xx、空結果、response body secret redaction 與 realtime 拒絕；
 - 排除 SpeakType 自身 HWND、保存最後外部視窗與原始文字目標，並在無效／錯誤焦點 HWND 時禁止注入；
 - history 寫入失敗、fallback clipboard 失敗與多重非致命錯誤不得靜默遺失。
 - Windows Credential Manager 匯入、外部環境變數保留、空白 credential 與遷移失敗不遺失 key；
@@ -54,15 +55,15 @@ $env:PATH = "C:\Users\steven\.cargo\bin;$env:PATH"
 ## Windows 10 smoke
 
 - `SpeakTypeCloud.exe` 啟動 3 秒後仍存活且 `Responding=True`，通過啟動 smoke。
-- 本輪未提供真實 OpenAI／xAI API Key，因此未送出付費請求。
+- 本輪未提供真實 OpenAI／xAI／OpenRouter API Key，因此未送出付費請求。
 
 ## Pending external acceptance
 
 以下項目需要額外環境或使用者憑證，尚未宣稱通過：
 
 1. Windows 11 完整 gate 與啟動 smoke。
-2. 以真實 OpenAI 與 xAI Key 做端到端錄音／辨識。
+2. 以真實 OpenAI、xAI 與 OpenRouter Key 做端到端錄音／辨識。
 3. Notepad、Chrome／Edge、VS Code、Word／Excel 的實際 Ctrl+V 注入矩陣。
 4. 提升權限與非提升權限視窗之間的注入限制。
 5. 圖片／複合格式剪貼簿還原行為；目前設計只保證文字剪貼簿。
-6. 真實 OpenAI／xAI realtime、實體麥克風、tray 點擊、Credential Manager／HKCU Run 與 NSIS 安裝／更新 smoke。
+6. 真實 OpenAI／xAI realtime、OpenRouter batch、實體麥克風、tray 點擊、Credential Manager／HKCU Run 與 NSIS 安裝／更新 smoke。

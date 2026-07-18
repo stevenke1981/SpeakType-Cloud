@@ -21,6 +21,16 @@
 - Realtime endpoint: `wss://api.x.ai/v1/stt`; input is raw 16 kHz mono PCM16 binary frames.
 - `smart_turn=<threshold>` and `smart_turn_timeout=<1..5000>` are opt-in. Only `speech_final=true` closes an utterance; chunk-final remains partial.
 
+## OpenRouter
+
+- Endpoint: `POST {base_url}/v1/audio/transcriptions`
+- 使用 JSON body：`{"model":"<model>","input_audio":{"data":"<base64 WAV>","format":"wav"},"language":"<ISO>","prompt":"<hint>"}`（非 multipart）。
+- Header：`Authorization: Bearer <key>`、`Content-Type: application/json`。
+- 預設模型：`openai/gpt-4o-mini-transcribe`（可在設定中更換）。
+- 預設 base_url：`https://openrouter.ai/api`。
+- API key 環境變數：`OPENROUTER_API_KEY`。
+- OpenRouter **不支援 Realtime 或 Continuous Dictation**。選擇 OpenRouter 作為 provider 時，辨識模式必須為 Batch / PTT；若嘗試使用 Realtime 模式，設定驗證會直接拒絕。
+
 ## 供應商切換
 
 設定畫面改變 `provider` 後儲存。每次辨識工作建立對應 provider；不共用 API Key，也不把 key 傳入 UI log。切換 provider 或 realtime 設定會先停止目前 session；batch fallback 必須由使用者明確確認。
