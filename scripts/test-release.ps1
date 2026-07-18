@@ -41,7 +41,7 @@ $workflow = Get-Content -LiteralPath (Join-Path $root ".github\workflows\windows
 foreach ($needle in @("build-installer.ps1", "generate-sbom.ps1", "upload-artifact")) {
     Assert-True $workflow.Contains($needle) "Windows workflow missing release step: $needle"
 }
-Assert-True $workflow.Contains("permissions:`n  contents: read") "Workflow must default to read-only contents permission"
+Assert-True ([regex]::IsMatch($workflow, '(?m)^permissions:\r?\n  contents: read\r?$')) "Workflow must default to read-only contents permission"
 Assert-True (-not $workflow.Contains("Select-Object -Single")) "Workflow must validate installer count explicitly"
 Assert-True $workflow.Contains("install-nsis-build-tool.ps1") "Workflow must use the hash-pinned NSIS installer"
 Assert-True (-not $workflow.Contains("choco install nsis")) "Workflow must not install NSIS directly from a feed"

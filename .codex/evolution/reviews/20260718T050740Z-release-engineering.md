@@ -20,6 +20,7 @@ Completed the remaining P1 hardening and release work plus P2 realtime transcrip
 - `scripts/build-installer.ps1 -ValidateOnly` validates the per-user NSIS template without executing an installer.
 - CycloneDX generation is schema-validated and deterministic; signing policy explicitly fails or skips when credentials are unavailable.
 - Portable ZIP creation, installer-template validation, deterministic SBOM generation, and a five-second responsive-process smoke test passed on the current Windows host.
+- The first clean GitHub runner exposed an LF-only workflow assertion; the assertion now accepts both LF and CRLF while preserving exact read-only permission matching, and the full local gate passed again.
 
 ## Scope and durability decision
 

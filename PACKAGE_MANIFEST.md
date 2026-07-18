@@ -8,7 +8,7 @@ This manifest lists every non-ignored source file except itself. Build outputs u
 |---|---:|---|
 | `.codex/evolution/LESSONS.md` | 629 | `de28afe910c56cce5f1229f24345f8218ae1ec083e7adfc2856b323bf5b3e034` |
 | `.codex/evolution/reviews/2026-07-17T14-08-57Z-speaktype-cloud-release.md` | 2719 | `11f836a33141e69a3fa34ced8ecd88c1c90bc6e1ae299327961cc545b74e2a74` |
-| `.codex/evolution/reviews/20260718T050740Z-release-engineering.md` | 2795 | `4e24c7978e67bcb5681247a9f28366962008cf5de889cd280b890a555dbb8285` |
+| `.codex/evolution/reviews/20260718T050740Z-release-engineering.md` | 3001 | `0b15f607fcc0f0669e50daaae6e7eaf733d31a6b9e1a9528cfca11acac134cae` |
 | `.env.example` | 29 | `7fb46c14efca1cbc7f754ffecf9a5f5addf2953a50c3f9b38441dfa65e801fda` |
 | `.github/workflows/windows.yml` | 5806 | `0c3d8a3ea59f0268cfc9de7f19398741cbb9f9a0fb5792cc5c98fbbbdf26c38d` |
 | `.gitignore` | 138 | `830c08bb70dbac538360e91f0e27a37bbed24b370e85c9105633f53889517faf` |
@@ -38,7 +38,7 @@ This manifest lists every non-ignored source file except itself. Build outputs u
 | `scripts/package-portable.ps1` | 2518 | `a97081db4ea9f8d1b3d3db1ef0a945fe572251f68abcb3351289d33ad4c7b11f` |
 | `scripts/run.ps1` | 221 | `753793270e27fdcae734fadc919a3e9fdf64808dda106fe5d8e20128b1e23148` |
 | `scripts/sign-artifacts.ps1` | 6249 | `480a0cec22997ca373b89895496ba36f6fbf6374c3849c55f0b29520b4738e08` |
-| `scripts/test-release.ps1` | 4681 | `36328c2b856d677de9ef1f7b75df331552f707437b2f566f61b5fb8b8b71d969` |
+| `scripts/test-release.ps1` | 4704 | `5d272490e53373bbac2f0cf2232f0b64076f9aeb8659adffe5122f17c6184649` |
 | `SECURITY.md` | 2680 | `08e050faa93c161221cbe50031696e31b9aec7a8e92c5690bbadba3d8a72d087` |
 | `SOURCES.md` | 974 | `04a2d3ece6f301f80c095101b7751f1916f93eb013893d6a6392bc5a81d2e2e6` |
 | `SPEC.md` | 2092 | `a9e4d478ca9eaca9665fb163f8b8506147a6bf982dab9c8ea5ae06c2c7dfd608` |
