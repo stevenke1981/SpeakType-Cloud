@@ -4,11 +4,13 @@ use crate::secrets;
 use crate::updater::{self, StagedUpdate, UpdateManifest};
 use eframe::egui;
 use std::sync::mpsc::{self, Receiver};
+use std::time::Duration;
 
 pub struct AppleShell {
     app: SpeakTypeCloudApp,
     tray: Option<SystemTray>,
     exit_requested: bool,
+    window_hidden: bool,
     api_key_window_open: bool,
     show_api_keys: bool,
     openai_key_edit: String,
@@ -73,7 +75,7 @@ impl AppleShell {
             })
             .err()
             .map(|error| error.to_string());
-        let tray = match SystemTray::new() {
+        let tray = match SystemTray::new(&cc.egui_ctx) {
             Ok(tray) => Some(tray),
             Err(error) => {
                 append_warning(&mut startup_warning, &format!("系統匣不可用：{error}"));
@@ -85,6 +87,7 @@ impl AppleShell {
             app: SpeakTypeCloudApp::new(cc),
             tray,
             exit_requested: false,
+            window_hidden: false,
             api_key_window_open: false,
             show_api_keys: false,
             openai_key_edit: String::new(),
@@ -102,30 +105,64 @@ impl AppleShell {
     }
 
     fn handle_window_lifecycle(&mut self, ctx: &egui::Context) {
+        // Poll tray menu / click actions. Handlers wake the egui loop via
+        // Context::request_repaint so this still runs while the window is hidden.
         if let Some(action) = self.tray.as_ref().and_then(SystemTray::poll_action) {
             match action {
                 TrayAction::Show => {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    self.show_from_tray(ctx);
                 }
-                TrayAction::Exit => self.request_exit(ctx),
+                TrayAction::Exit => {
+                    self.request_exit(ctx);
+                }
             }
         }
 
+        // Handle close-requested (window X button, or Close command from code).
+        // When exit_requested is true we allow the close to proceed; otherwise
+        // we intercept and hide to tray when available.
         if ctx.input(|input| input.viewport().close_requested()) {
             match close_decision(self.tray.is_some(), self.exit_requested) {
                 CloseDecision::Hide => {
+                    self.window_hidden = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                    // Backup wake path if a tray handler missed wiring.
+                    ctx.request_repaint_after(Duration::from_millis(250));
                 }
-                CloseDecision::Exit => {}
+                CloseDecision::Exit => {
+                    // Allow the native close to proceed; eframe will drop the
+                    // App (AppleShell → SpeakTypeCloudApp), running all Rust
+                    // Drop implementations for config handles, temp files etc.
+                }
             }
         }
+
+        // Keep a low-rate backup repaint while hidden so tray actions remain
+        // recoverable even if an event handler failed to wake the loop.
+        if self.window_hidden && !self.exit_requested {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+    }
+
+    fn show_from_tray(&mut self, ctx: &egui::Context) {
+        self.window_hidden = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        ctx.request_repaint();
     }
 
     fn request_exit(&mut self, ctx: &egui::Context) {
         self.exit_requested = true;
+        self.window_hidden = false;
+        // When exiting from tray the window may be hidden. Restore it first so
+        // the Close command is delivered through the normal close-requested
+        // path on a subsequent frame (ViewportCommands apply after update).
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        ctx.request_repaint();
     }
 
     fn show_window_controls(&mut self, ctx: &egui::Context) {
@@ -136,19 +173,23 @@ impl AppleShell {
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(self.tray.is_some(), egui::Button::new("隱藏到系統匣"))
-                        .on_disabled_hover_text("系統匣初始化失敗，請使用退出程式")
-                        .clicked()
+                    if crate::theme::settings_button_enabled(
+                        ui,
+                        self.tray.is_some(),
+                        "隱藏到系統匣",
+                    )
+                    .on_disabled_hover_text("系統匣初始化失敗，請使用退出程式")
+                    .clicked()
                     {
                         hide = true;
                     }
-                    if ui.button("退出程式").clicked() {
+                    if crate::theme::settings_button(ui, "退出程式").clicked() {
                         exit = true;
                     }
                 });
             });
         if hide {
+            self.window_hidden = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
         if exit {
@@ -161,10 +202,7 @@ impl AppleShell {
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-18.0, 18.0))
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                if ui
-                    .add(egui::Button::new(
-                        egui::RichText::new("🔑  API 金鑰").strong(),
-                    ))
+                if crate::theme::settings_button(ui, "🔑  API 金鑰")
                     .on_hover_text("設定 OpenAI、xAI 與 OpenRouter API Key")
                     .clicked()
                 {
@@ -179,7 +217,7 @@ impl AppleShell {
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-18.0, 58.0))
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                if ui.button("檢查更新").clicked() {
+                if crate::theme::settings_button(ui, "檢查更新").clicked() {
                     self.update_window_open = true;
                 }
             });
@@ -258,7 +296,7 @@ impl AppleShell {
                         );
                     }
                     UpdateState::Idle => {
-                        if ui.button("檢查 GitHub Releases").clicked() {
+                        if crate::theme::settings_button(ui, "檢查 GitHub Releases").clicked() {
                             action = Some(UpdateAction::Check);
                         }
                     }
@@ -268,14 +306,14 @@ impl AppleShell {
                     }
                     UpdateState::UpToDate => {
                         ui.label("目前已是最新版本。");
-                        if ui.button("再次檢查").clicked() {
+                        if crate::theme::settings_button(ui, "再次檢查").clicked() {
                             action = Some(UpdateAction::Check);
                         }
                     }
                     UpdateState::Available(manifest) => {
                         ui.strong(format!("可用版本：{}", manifest.version));
                         ui.label("按下後才會下載至暫存資料夾並驗證 SHA-256 與 Authenticode 狀態。");
-                        if ui.button("下載並驗證").clicked() {
+                        if crate::theme::settings_button(ui, "下載並驗證").clicked() {
                             action = Some(UpdateAction::Stage(manifest.clone()));
                         }
                     }
@@ -291,7 +329,7 @@ impl AppleShell {
                             egui::Color32::from_rgb(190, 105, 0),
                             "下一步會啟動可見的安裝精靈；不會靜默安裝。",
                         );
-                        if ui.button("啟動安裝程式").clicked() {
+                        if crate::theme::settings_button(ui, "啟動安裝程式").clicked() {
                             action = Some(UpdateAction::Launch(staged.clone()));
                         }
                     }
@@ -300,7 +338,7 @@ impl AppleShell {
                     }
                     UpdateState::Error(error) => {
                         ui.colored_label(egui::Color32::from_rgb(215, 58, 73), error);
-                        if ui.button("重新檢查").clicked() {
+                        if crate::theme::settings_button(ui, "重新檢查").clicked() {
                             action = Some(UpdateAction::Check);
                         }
                     }
@@ -328,20 +366,9 @@ impl AppleShell {
             return;
         }
 
-        let (openai_env, xai_env, openrouter_env) = match configured_key_names() {
-            Ok(names) => names,
-            Err(error) => {
-                self.key_message = Some(KeyMessage {
-                    success: false,
-                    text: error,
-                });
-                (
-                    "OPENAI_API_KEY".to_string(),
-                    "XAI_API_KEY".to_string(),
-                    "OPENROUTER_API_KEY".to_string(),
-                )
-            }
-        };
+        let openai_env = self.app.config.openai.api_key_env.clone();
+        let xai_env = self.app.config.xai.api_key_env.clone();
+        let openrouter_env = self.app.config.openrouter.api_key_env.clone();
         let openai_configured = secrets::is_api_key_configured(&openai_env);
         let xai_configured = secrets::is_api_key_configured(&xai_env);
         let openrouter_configured = secrets::is_api_key_configured(&openrouter_env);
@@ -385,11 +412,10 @@ impl AppleShell {
                             .desired_width(f32::INFINITY),
                     );
                     ui.horizontal(|ui| {
-                        if ui.button("儲存 OpenAI Key").clicked() {
+                        if crate::theme::settings_button(ui, "儲存 OpenAI Key").clicked() {
                             action = Some(KeyAction::Save(ProviderKey::OpenAi));
                         }
-                        if ui
-                            .add_enabled(openai_configured, egui::Button::new("清除"))
+                        if crate::theme::settings_button_enabled(ui, openai_configured, "清除")
                             .clicked()
                         {
                             action = Some(KeyAction::Clear(ProviderKey::OpenAi));
@@ -418,11 +444,10 @@ impl AppleShell {
                             .desired_width(f32::INFINITY),
                     );
                     ui.horizontal(|ui| {
-                        if ui.button("儲存 xAI Key").clicked() {
+                        if crate::theme::settings_button(ui, "儲存 xAI Key").clicked() {
                             action = Some(KeyAction::Save(ProviderKey::Xai));
                         }
-                        if ui
-                            .add_enabled(xai_configured, egui::Button::new("清除"))
+                        if crate::theme::settings_button_enabled(ui, xai_configured, "清除")
                             .clicked()
                         {
                             action = Some(KeyAction::Clear(ProviderKey::Xai));
@@ -451,11 +476,10 @@ impl AppleShell {
                             .desired_width(f32::INFINITY),
                     );
                     ui.horizontal(|ui| {
-                        if ui.button("儲存 OpenRouter Key").clicked() {
+                        if crate::theme::settings_button(ui, "儲存 OpenRouter Key").clicked() {
                             action = Some(KeyAction::Save(ProviderKey::OpenRouter));
                         }
-                        if ui
-                            .add_enabled(openrouter_configured, egui::Button::new("清除"))
+                        if crate::theme::settings_button_enabled(ui, openrouter_configured, "清除")
                             .clicked()
                         {
                             action = Some(KeyAction::Clear(ProviderKey::OpenRouter));
@@ -465,6 +489,65 @@ impl AppleShell {
 
                 ui.add_space(6.0);
                 ui.checkbox(&mut self.show_api_keys, "顯示輸入中的 API Key");
+
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("API Key 環境變數名稱設定")
+                        .size(15.0)
+                        .strong(),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "變更後需要前往主頁面點擊「儲存設定」才會生效。",
+                    )
+                    .small()
+                    .color(egui::Color32::from_rgb(110, 110, 115)),
+                );
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("OpenAI")
+                            .small()
+                            .color(egui::Color32::from_rgb(110, 110, 115)),
+                    );
+                    ui.add_sized(
+                        egui::vec2(180.0, 18.0),
+                        egui::TextEdit::singleline(
+                            &mut self.app.config.openai.api_key_env,
+                        )
+                        .font(egui::TextStyle::Small)
+                        .hint_text("OPENAI_API_KEY"),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("xAI")
+                            .small()
+                            .color(egui::Color32::from_rgb(110, 110, 115)),
+                    );
+                    ui.add_sized(
+                        egui::vec2(180.0, 18.0),
+                        egui::TextEdit::singleline(
+                            &mut self.app.config.xai.api_key_env,
+                        )
+                        .font(egui::TextStyle::Small)
+                        .hint_text("XAI_API_KEY"),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("OpenRouter")
+                            .small()
+                            .color(egui::Color32::from_rgb(110, 110, 115)),
+                    );
+                    ui.add_sized(
+                        egui::vec2(180.0, 18.0),
+                        egui::TextEdit::singleline(
+                            &mut self.app.config.openrouter.api_key_env,
+                        )
+                        .font(egui::TextStyle::Small)
+                        .hint_text("OPENROUTER_API_KEY"),
+                    );
+                });
 
                 if let Some(warning) = &self.startup_warning {
                     ui.colored_label(
@@ -489,42 +572,48 @@ impl AppleShell {
     }
 
     fn apply_key_action(&mut self, action: KeyAction) {
-        let config = match AppConfig::load().and_then(|config| {
-            config.validate()?;
-            Ok(config)
-        }) {
-            Ok(config) => config,
-            Err(error) => {
-                self.key_message = Some(KeyMessage {
-                    success: false,
-                    text: error.to_string(),
-                });
-                return;
-            }
-        };
-
         let (provider_name, env_name, key_value) = match action {
             KeyAction::Save(ProviderKey::OpenAi) => (
                 "OpenAI",
-                config.openai.api_key_env,
+                self.app.config.openai.api_key_env.clone(),
                 Some(self.openai_key_edit.trim().to_string()),
             ),
             KeyAction::Save(ProviderKey::Xai) => (
                 "xAI",
-                config.xai.api_key_env,
+                self.app.config.xai.api_key_env.clone(),
                 Some(self.xai_key_edit.trim().to_string()),
             ),
             KeyAction::Save(ProviderKey::OpenRouter) => (
                 "OpenRouter",
-                config.openrouter.api_key_env,
+                self.app.config.openrouter.api_key_env.clone(),
                 Some(self.openrouter_key_edit.trim().to_string()),
             ),
-            KeyAction::Clear(ProviderKey::OpenAi) => ("OpenAI", config.openai.api_key_env, None),
-            KeyAction::Clear(ProviderKey::Xai) => ("xAI", config.xai.api_key_env, None),
-            KeyAction::Clear(ProviderKey::OpenRouter) => {
-                ("OpenRouter", config.openrouter.api_key_env, None)
+            KeyAction::Clear(ProviderKey::OpenAi) => {
+                ("OpenAI", self.app.config.openai.api_key_env.clone(), None)
             }
+            KeyAction::Clear(ProviderKey::Xai) => {
+                ("xAI", self.app.config.xai.api_key_env.clone(), None)
+            }
+            KeyAction::Clear(ProviderKey::OpenRouter) => (
+                "OpenRouter",
+                self.app.config.openrouter.api_key_env.clone(),
+                None,
+            ),
         };
+
+        // Validate that the env var name is a syntactically valid environment
+        // variable name before touching Credential Manager.  This mirrors the
+        // check in AppConfig::validate() so the user cannot accidentally save
+        // credentials under a name that would be rejected at startup.
+        if !crate::config::is_environment_variable_name(&env_name) {
+            self.key_message = Some(KeyMessage {
+                success: false,
+                text: format!(
+                    "{provider_name} 環境變數名稱「{env_name}」不合法，必須以字母或底線開頭且僅含字母、數字與底線。請在「API Key 環境變數名稱設定」中修正後至主頁點擊「儲存設定」。"
+                ),
+            });
+            return;
+        }
 
         let result = match key_value {
             Some(api_key) => secrets::save_api_key(&env_name, &api_key),
@@ -611,7 +700,7 @@ fn append_warning(current: &mut Option<String>, warning: &str) {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TrayAction {
     Show,
     Exit,
@@ -620,61 +709,78 @@ enum TrayAction {
 #[cfg(target_os = "windows")]
 struct SystemTray {
     _icon: tray_icon::TrayIcon,
-    tray_id: tray_icon::TrayIconId,
-    show_id: tray_icon::menu::MenuId,
-    exit_id: tray_icon::menu::MenuId,
+    pending: std::sync::mpsc::Receiver<TrayAction>,
 }
 
 #[cfg(target_os = "windows")]
 impl SystemTray {
-    fn new() -> Result<Self, String> {
-        use tray_icon::menu::{Menu, MenuItem};
-        use tray_icon::TrayIconBuilder;
+    fn new(ctx: &egui::Context) -> Result<Self, String> {
+        use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+        use tray_icon::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
         let show = MenuItem::new("顯示 SpeakType Cloud", true, None);
         let exit = MenuItem::new("退出", true, None);
+        let show_id = show.id().clone();
+        let exit_id = exit.id().clone();
         let menu = Menu::with_items(&[&show, &exit]).map_err(|error| error.to_string())?;
         let icon = tray_icon_image()?;
+        // Left-click restores the window; right-click opens the context menu.
         let tray = TrayIconBuilder::new()
             .with_tooltip("SpeakType Cloud")
             .with_icon(icon)
             .with_menu(Box::new(menu))
+            .with_menu_on_left_click(false)
             .build()
             .map_err(|error| error.to_string())?;
+        let tray_id = tray.id().clone();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        // tray-icon/muda deliver events on the Win32 message pump thread. With
+        // eframe/winit those messages do not automatically schedule an egui
+        // frame, so a hidden window would never poll the default receivers.
+        // Forward into our channel and wake egui on every tray/menu event.
+        let menu_tx = tx.clone();
+        let menu_ctx = ctx.clone();
+        MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+            if event.id == exit_id {
+                let _ = menu_tx.send(TrayAction::Exit);
+            } else if event.id == show_id {
+                let _ = menu_tx.send(TrayAction::Show);
+            }
+            menu_ctx.request_repaint();
+        }));
+
+        let tray_tx = tx;
+        let tray_ctx = ctx.clone();
+        TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+            let show = match &event {
+                TrayIconEvent::DoubleClick {
+                    id,
+                    button: MouseButton::Left,
+                    ..
+                } => id == &tray_id,
+                TrayIconEvent::Click {
+                    id,
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } => id == &tray_id,
+                _ => false,
+            };
+            if show {
+                let _ = tray_tx.send(TrayAction::Show);
+            }
+            tray_ctx.request_repaint();
+        }));
+
         Ok(Self {
-            tray_id: tray.id().clone(),
-            show_id: show.id().clone(),
-            exit_id: exit.id().clone(),
             _icon: tray,
+            pending: rx,
         })
     }
 
     fn poll_action(&self) -> Option<TrayAction> {
-        use tray_icon::menu::MenuEvent;
-        use tray_icon::{MouseButton, TrayIconEvent};
-
-        let mut action = None;
-        for event in MenuEvent::receiver().try_iter() {
-            if event.id == self.exit_id {
-                return Some(TrayAction::Exit);
-            }
-            if event.id == self.show_id {
-                action = Some(TrayAction::Show);
-            }
-        }
-        for event in TrayIconEvent::receiver().try_iter() {
-            if matches!(
-                event,
-                TrayIconEvent::DoubleClick {
-                    ref id,
-                    button: MouseButton::Left,
-                    ..
-                } if id == &self.tray_id
-            ) {
-                action = Some(TrayAction::Show);
-            }
-        }
-        action
+        drain_tray_actions(self.pending.try_iter())
     }
 }
 
@@ -708,7 +814,7 @@ struct SystemTray;
 
 #[cfg(not(target_os = "windows"))]
 impl SystemTray {
-    fn new() -> Result<Self, String> {
+    fn new(_ctx: &egui::Context) -> Result<Self, String> {
         Err("系統匣目前僅支援 Windows".to_string())
     }
 
@@ -717,14 +823,20 @@ impl SystemTray {
     }
 }
 
-fn configured_key_names() -> Result<(String, String, String), String> {
-    let config = AppConfig::load().map_err(|error| error.to_string())?;
-    config.validate().map_err(|error| error.to_string())?;
-    Ok((
-        config.openai.api_key_env,
-        config.xai.api_key_env,
-        config.openrouter.api_key_env,
-    ))
+/// Collapse a burst of tray events into a single action.
+/// Exit always wins so a Show click cannot cancel an explicit quit.
+fn drain_tray_actions<I>(actions: I) -> Option<TrayAction>
+where
+    I: IntoIterator<Item = TrayAction>,
+{
+    let mut action = None;
+    for next in actions {
+        if matches!(next, TrayAction::Exit) {
+            return Some(TrayAction::Exit);
+        }
+        action = Some(next);
+    }
+    action
 }
 
 fn configured_badge(configured: bool) -> (&'static str, egui::Color32) {
@@ -748,6 +860,44 @@ mod tests {
     fn explicit_exit_or_missing_tray_allows_close() {
         assert_eq!(close_decision(true, true), CloseDecision::Exit);
         assert_eq!(close_decision(false, false), CloseDecision::Exit);
+    }
+
+    #[test]
+    fn close_decision_respects_exit_requested_with_tray() {
+        // When exit is explicitly requested, close should proceed even with tray.
+        assert_eq!(close_decision(true, true), CloseDecision::Exit);
+    }
+
+    #[test]
+    fn close_decision_hides_when_no_exit_and_tray_available() {
+        assert_eq!(close_decision(true, false), CloseDecision::Hide);
+    }
+
+    #[test]
+    fn drain_tray_actions_prefers_exit_over_show() {
+        assert_eq!(
+            drain_tray_actions([TrayAction::Show, TrayAction::Exit, TrayAction::Show]),
+            Some(TrayAction::Exit)
+        );
+        assert_eq!(
+            drain_tray_actions([TrayAction::Show, TrayAction::Show]),
+            Some(TrayAction::Show)
+        );
+        assert_eq!(drain_tray_actions(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn key_action_enum_is_constructable() {
+        // Ensure KeyAction/ProviderKey enums compile and match.
+        let actions = [
+            KeyAction::Save(ProviderKey::OpenAi),
+            KeyAction::Save(ProviderKey::Xai),
+            KeyAction::Save(ProviderKey::OpenRouter),
+            KeyAction::Clear(ProviderKey::OpenAi),
+            KeyAction::Clear(ProviderKey::Xai),
+            KeyAction::Clear(ProviderKey::OpenRouter),
+        ];
+        assert_eq!(actions.len(), 6);
     }
 
     #[test]

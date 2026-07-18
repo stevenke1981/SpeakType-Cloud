@@ -19,7 +19,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 pub struct SpeakTypeCloudApp {
-    config: AppConfig,
+    pub config: AppConfig,
     recorder: Recorder,
     hotkey: Option<GlobalHotkey>,
     hotkey_error: Option<String>,
@@ -840,10 +840,6 @@ impl eframe::App for SpeakTypeCloudApp {
                             ui.label("模型");
                             ui.text_edit_singleline(&mut self.config.openai.model);
                         });
-                        ui.horizontal(|ui| {
-                            ui.label("API Key 環境變數");
-                            ui.text_edit_singleline(&mut self.config.openai.api_key_env);
-                        });
                         if self.config.transcription_mode.is_realtime() {
                             ui.horizontal(|ui| {
                                 ui.label("Realtime 模型");
@@ -876,10 +872,6 @@ impl eframe::App for SpeakTypeCloudApp {
                             ui.label("模型");
                             ui.text_edit_singleline(&mut self.config.openrouter.model);
                         });
-                        ui.horizontal(|ui| {
-                            ui.label("API Key 環境變數");
-                            ui.text_edit_singleline(&mut self.config.openrouter.api_key_env);
-                        });
                         if self.config.transcription_mode.is_realtime() {
                             ui.colored_label(
                                 egui::Color32::from_rgb(190, 105, 0),
@@ -890,10 +882,6 @@ impl eframe::App for SpeakTypeCloudApp {
                         }
                     }
                     ProviderKind::Xai => {
-                        ui.horizontal(|ui| {
-                            ui.label("API Key 環境變數");
-                            ui.text_edit_singleline(&mut self.config.xai.api_key_env);
-                        });
                         ui.checkbox(&mut self.config.xai.format_text, "支援的語言啟用文字格式化");
                         ui.label("xAI Keyterms（每行一個）");
                         ui.text_edit_multiline(&mut self.keyterms_edit);
@@ -921,10 +909,6 @@ impl eframe::App for SpeakTypeCloudApp {
                         }
                     }
                 }
-                ui.label(format!(
-                    "API Key 由 Windows Credential Manager 載入至目前程序的環境變數 {}，不會寫入設定檔。",
-                    self.config.api_key_env()
-                ));
                 ui.checkbox(
                     &mut self.config.text_processing.normalize_chinese_punctuation,
                     "正規化中文標點",
@@ -1022,7 +1006,7 @@ impl eframe::App for SpeakTypeCloudApp {
             });
 
             ui.add_space(8.0);
-            if ui.button("儲存設定").clicked() {
+            if crate::theme::settings_button(ui, "儲存設定").clicked() {
                 self.save_settings();
             }
         });

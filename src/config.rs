@@ -445,7 +445,7 @@ fn parse_config(text: &str) -> AppResult<AppConfig> {
         .map_err(|error| AppError::Configuration(format!("設定檔格式錯誤：{error}")))
 }
 
-fn is_environment_variable_name(value: &str) -> bool {
+pub fn is_environment_variable_name(value: &str) -> bool {
     let mut characters = value.chars();
     let Some(first) = characters.next() else {
         return false;

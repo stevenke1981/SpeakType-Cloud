@@ -80,3 +80,61 @@ pub fn install(ctx: &egui::Context) {
 
     ctx.set_style(style);
 }
+
+/// Render a consistently-styled settings-page button.
+///
+/// All buttons on API key / update / control panels should use this
+/// to guarantee identical normal / hover / active / disabled visuals.
+/// The shared accent fill and stroke keep settings buttons visually identical
+/// even when they are rendered in different windows or panels.
+pub fn settings_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(label)
+            .fill(settings_button_fill())
+            .stroke(settings_button_stroke()),
+    )
+}
+
+/// Render a consistently-styled settings-page button with conditional enablement.
+///
+/// Same as `settings_button` but honours an `enabled` flag. When disabled,
+/// egui dims the shared accent baseline so the control remains recognizable
+/// while correctly communicating that it cannot be clicked.
+pub fn settings_button_enabled(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Response {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(label)
+            .fill(settings_button_fill())
+            .stroke(settings_button_stroke()),
+    )
+}
+
+fn settings_button_fill() -> egui::Color32 {
+    egui::Color32::from_rgb(0, 122, 255)
+}
+
+fn settings_button_stroke() -> egui::Stroke {
+    egui::Stroke::new(1.0, settings_button_fill())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_button_helpers_have_correct_signatures() {
+        // These are thin wrappers around egui::Button that inherit all visual
+        // properties from the global theme set by install().  We cannot call
+        // install() without a CreationContext, but we can verify at compile
+        // time that the function signatures match the expected widget API.
+        //
+        // install() explicitly overrides every widget state
+        // (inactive / hovered / active / noninteractive / open) with
+        // consistent fill, stroke, rounding, and expansion values derived
+        // from the six design tokens at the top of this module.
+        let _: fn(&mut egui::Ui, &str) -> egui::Response = settings_button;
+        let _: fn(&mut egui::Ui, bool, &str) -> egui::Response = settings_button_enabled;
+        assert_eq!(settings_button_stroke().color, settings_button_fill());
+        assert_eq!(settings_button_stroke().width, 1.0);
+    }
+}
