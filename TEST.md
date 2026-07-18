@@ -1,7 +1,7 @@
 # Test and Acceptance Record
 
 驗證日期：2026-07-18<br>
-驗證主機：Windows 10 22H2（10.0.19045）、Rust 1.96.0 stable MSVC
+驗證主機：Windows 10 22H2（10.0.19045）、Rust 1.97.1 stable MSVC
 
 ## Automated gate
 

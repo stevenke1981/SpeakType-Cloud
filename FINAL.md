@@ -20,7 +20,7 @@
 
 ## Verification
 
-- Windows 10 22H2（10.0.19045）、Rust 1.96.0 stable MSVC。
+- Windows 10 22H2（10.0.19045）、Rust 1.97.1 stable MSVC。
 - `scripts/check.ps1`：exit 0。
 - fmt、Clippy `-D warnings`、98 tests、release build：全數通過。
 - source secret scan：未發現長格式 `sk-`／`xai-` 內容。

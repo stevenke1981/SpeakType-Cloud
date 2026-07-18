@@ -71,7 +71,7 @@ NSIS 安裝器建置、Authenticode 簽署與安全更新 manifest 詳見 `scrip
 
 ## 驗證狀態
 
-- Windows 10 22H2、Rust 1.96.0 stable MSVC：fmt、Clippy、98 tests、release build 與既有 batch 啟動 smoke 通過。
+- Windows 10 22H2、Rust 1.97.1 stable MSVC：fmt、Clippy、98 tests、release build 與既有 batch 啟動 smoke 通過。
 - OpenAI／xAI adapters 使用離線 mock server 驗證，不需要也不消耗真實 API Key。
 - Windows 11、真實 provider 與 Notepad／瀏覽器／VS Code／Office 注入矩陣仍列於 `TODOS.md`，尚未宣稱通過。
 - P1/P2 以離線 HTTP／WebSocket mock、VAD、音訊 backpressure、取消、更新供應鏈與 release static tests 驗證；真實 realtime provider、實體麥克風與安裝器互動 smoke 仍待外部環境。

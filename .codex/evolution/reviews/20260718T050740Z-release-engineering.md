@@ -21,6 +21,7 @@ Completed the remaining P1 hardening and release work plus P2 realtime transcrip
 - CycloneDX generation is schema-validated and deterministic; signing policy explicitly fails or skips when credentials are unavailable.
 - Portable ZIP creation, installer-template validation, deterministic SBOM generation, and a five-second responsive-process smoke test passed on the current Windows host.
 - The first clean GitHub runner exposed an LF-only workflow assertion; the assertion now accepts both LF and CRLF while preserving exact read-only permission matching, and the full local gate passed again.
+- The next runner exposed Rust 1.97's new `float_literal_f32_fallback` lint in the existing theme; all `Stroke` widths now use explicit `f32` literals, and the full gate passes locally on Rust 1.97.1.
 
 ## Scope and durability decision
 

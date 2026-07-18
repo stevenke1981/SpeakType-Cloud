@@ -42,40 +42,40 @@ pub fn install(ctx: &egui::Context) {
     style.visuals.faint_bg_color = hover;
     style.visuals.hyperlink_color = accent;
     style.visuals.selection.bg_fill = accent;
-    style.visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    style.visuals.selection.stroke = egui::Stroke::new(1.0_f32, egui::Color32::WHITE);
     style.visuals.window_rounding = egui::Rounding::same(18.0);
     style.visuals.menu_rounding = egui::Rounding::same(14.0);
 
     style.visuals.widgets.noninteractive.bg_fill = card;
     style.visuals.widgets.noninteractive.weak_bg_fill = egui::Color32::TRANSPARENT;
-    style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, border);
-    style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, text);
+    style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, border);
+    style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, text);
     style.visuals.widgets.noninteractive.rounding = egui::Rounding::same(12.0);
 
     style.visuals.widgets.inactive.bg_fill = card;
     style.visuals.widgets.inactive.weak_bg_fill = card;
-    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, border);
-    style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, text);
+    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, border);
+    style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, text);
     style.visuals.widgets.inactive.rounding = egui::Rounding::same(12.0);
 
     style.visuals.widgets.hovered.bg_fill = hover;
     style.visuals.widgets.hovered.weak_bg_fill = hover;
-    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, accent_hover);
-    style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.5, text);
+    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, accent_hover);
+    style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.5_f32, text);
     style.visuals.widgets.hovered.rounding = egui::Rounding::same(12.0);
     style.visuals.widgets.hovered.expansion = 1.0;
 
     style.visuals.widgets.active.bg_fill = accent_pressed;
     style.visuals.widgets.active.weak_bg_fill = accent_pressed;
-    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, accent_pressed);
-    style.visuals.widgets.active.fg_stroke = egui::Stroke::new(1.5, egui::Color32::WHITE);
+    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, accent_pressed);
+    style.visuals.widgets.active.fg_stroke = egui::Stroke::new(1.5_f32, egui::Color32::WHITE);
     style.visuals.widgets.active.rounding = egui::Rounding::same(12.0);
     style.visuals.widgets.active.expansion = 0.0;
 
     style.visuals.widgets.open.bg_fill = field;
     style.visuals.widgets.open.weak_bg_fill = field;
-    style.visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, accent);
-    style.visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, text);
+    style.visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0_f32, accent);
+    style.visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0_f32, text);
     style.visuals.widgets.open.rounding = egui::Rounding::same(12.0);
 
     ctx.set_style(style);

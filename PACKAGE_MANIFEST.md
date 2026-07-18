@@ -8,7 +8,7 @@ This manifest lists every non-ignored source file except itself. Build outputs u
 |---|---:|---|
 | `.codex/evolution/LESSONS.md` | 629 | `de28afe910c56cce5f1229f24345f8218ae1ec083e7adfc2856b323bf5b3e034` |
 | `.codex/evolution/reviews/2026-07-17T14-08-57Z-speaktype-cloud-release.md` | 2719 | `11f836a33141e69a3fa34ced8ecd88c1c90bc6e1ae299327961cc545b74e2a74` |
-| `.codex/evolution/reviews/20260718T050740Z-release-engineering.md` | 3001 | `0b15f607fcc0f0669e50daaae6e7eaf733d31a6b9e1a9528cfca11acac134cae` |
+| `.codex/evolution/reviews/20260718T050740Z-release-engineering.md` | 3202 | `7d62bc5b1328563f4908b64f1031fccfe35bb36148feb80f76a2f5f3fe529fb1` |
 | `.env.example` | 29 | `7fb46c14efca1cbc7f754ffecf9a5f5addf2953a50c3f9b38441dfa65e801fda` |
 | `.github/workflows/windows.yml` | 5806 | `0c3d8a3ea59f0268cfc9de7f19398741cbb9f9a0fb5792cc5c98fbbbdf26c38d` |
 | `.gitignore` | 138 | `830c08bb70dbac538360e91f0e27a37bbed24b370e85c9105633f53889517faf` |
@@ -19,14 +19,14 @@ This manifest lists every non-ignored source file except itself. Build outputs u
 | `Cargo.lock` | 145821 | `46bdd193cb099f1bc80c022b482031f714e388c2668a2f2c22efc3e2900a6600` |
 | `Cargo.toml` | 1462 | `87b8a32573a3540db9aac0ce848595ced38e65f2b4f76bd07181542eb097ff7c` |
 | `config.example.toml` | 1605 | `ff4471f3da8363c10e07f21c110adc2970d233e16add102d5ce0b8fa9e1f1157` |
-| `FINAL.md` | 3501 | `5265501c78e21d846b1dffa80fab4d724c862cc4dd86cfe1c76c21c59731cd98` |
+| `FINAL.md` | 3501 | `f23267024838ce940ad2efe5b7a8d0836c200b46a76248fe2829bbd439dfe36e` |
 | `installer/cyclonedx-minimal.schema.json` | 1440 | `c98979c57a39e992b9735b536d2586b409cf605259843795b30a4c0fd50ff9f3` |
 | `installer/release-provenance.json` | 2156 | `001bf9f3935c54cd859e6d65f4acfa058c0a5ed7c6d291d76693c986b9ea6265` |
 | `installer/SpeakTypeCloud.nsi` | 2778 | `a0063e9daf02bc7310776ac2259093ed52f6448b1b2b783e350bb9643ac45b26` |
 | `LICENSE` | 1056 | `1126322e2cc8d165adc4c792eeb195717de2bcc7b39be1ce77959d78e87ef685` |
 | `OPENCODE.md` | 672 | `d1561562bea54fa2d26bcc5a20d83f8b7eae19abd40d7d6fabb6642d25f44d48` |
 | `PLAN.md` | 964 | `4c4ec92365604ccd2489fad1653221de0257599ce3603a0a484749fd9ac5f3c0` |
-| `README.md` | 4222 | `15621c67e358bab0e84b664e28e7acd79235d939a11b0a60705fa6f8f968e3bf` |
+| `README.md` | 4222 | `965974d98484cfe0a41fd4756bbd59ef336f4670de7478e2d3d6ceab35a66ef0` |
 | `REFERENCE_ANALYSIS.md` | 951 | `a7031ee0a3e9a3e4b5dfe07d64295d32f79b18a665a3582d777382813f5cf708` |
 | `scripts/build-installer.ps1` | 2853 | `60d809fd5eec41373f119ceea2117f040a874e64d5afbf6ed904baf0ac1d68e7` |
 | `scripts/build-release.ps1` | 502 | `33b4c8219f1a697db2e05581763f4c97198b88c8466e28a6936a90a5d70c86d2` |
@@ -63,10 +63,10 @@ This manifest lists every non-ignored source file except itself. Build outputs u
 | `src/secrets.rs` | 14352 | `94c582a91fde6f9dda555b9afd542fa7f58a1b4ee25570798ee9bb6b5e59fd3c` |
 | `src/shell.rs` | 27046 | `7b27feedd4a4938035d76eef7aa74ec0f5365ec6f296c8c89136d509a5a6304f` |
 | `src/startup.rs` | 7043 | `ab3af66229646fcd92853c773dca6559c84a38c76d0e220a595479df24c6b028` |
-| `src/theme.rs` | 3940 | `bbeca9f1ba9d9898b990b641e0e21722469592525dcb4ec8f7ffe439c089a411` |
+| `src/theme.rs` | 3973 | `b065d720115be3d383a6122ad71c343354a14aea8df755f46c409713eb167ebd` |
 | `src/transcription.rs` | 10420 | `2d45321f56ce11a1f18cc9697683b785150bfad5df6ef59f2f249830e1717de7` |
 | `src/updater.rs` | 13871 | `18e60f63f7d3a684bf4b35aebb9d2fae776d3f45bc520edf0eaa201b9ef23f12` |
 | `src/vad.rs` | 4979 | `1de5e4aa6d53a54bc3c630151814125f3c53c2c2412d53cd1bcecd632eeb0049` |
-| `TEST.md` | 3964 | `72ee7faf15bac784b25dbe006dca0857f4c9a5362c1f9d64340cfb9f4f3d3c9f` |
+| `TEST.md` | 3964 | `8dd711bfda7ae895419aab6b4189d8273923b784a7d1276641faafddd35158cc` |
 | `TODOS.md` | 1582 | `badf49db77b34d62a2644430319140e9bd2657a44cf539999f1a9dfaaba7eb99` |
 | `UI_DESIGN.md` | 1039 | `43ddfbc1a7175d5bbe53ead293cc57de0d738fa0f8fdbe8399120392589ebea1` |
