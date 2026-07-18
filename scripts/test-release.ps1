@@ -36,6 +36,8 @@ foreach ($needle in @("WriteUninstaller", "CreateShortcut", "UninstallString", "
     Assert-True $nsi.Contains($needle) "NSIS template missing: $needle"
 }
 Assert-True $nsi.Contains('DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "SpeakType Cloud"') "NSIS uninstaller must remove only the app-owned startup value"
+Assert-True (-not [regex]::IsMatch($nsi, '(?m)^SetShellVarContext\s')) "SetShellVarContext is not valid at NSIS top level"
+Assert-True ([regex]::Matches($nsi, '(?m)^\s{2}SetShellVarContext current\r?$').Count -eq 2) "Installer and uninstaller must both use the current-user shell context"
 
 $workflow = Get-Content -LiteralPath (Join-Path $root ".github\workflows\windows.yml") -Raw
 foreach ($needle in @("build-installer.ps1", "generate-sbom.ps1", "upload-artifact")) {

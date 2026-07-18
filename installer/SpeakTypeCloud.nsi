@@ -1,6 +1,5 @@
 Unicode true
 RequestExecutionLevel user
-SetShellVarContext current
 
 !include "MUI2.nsh"
 
@@ -38,6 +37,7 @@ UninstallIcon "${ICON_FILE}"
 !insertmacro MUI_LANGUAGE "English"
 
 Section "Install" SEC_MAIN
+  SetShellVarContext current
   SetOutPath "$INSTDIR"
   File /oname=SpeakTypeCloud.exe "${APP_EXE}"
   File /oname=SpeakTypeCloud.ico "${ICON_FILE}"
@@ -60,6 +60,7 @@ Section "Install" SEC_MAIN
 SectionEnd
 
 Section "Uninstall"
+  SetShellVarContext current
   Delete "$SMPROGRAMS\SpeakType Cloud\SpeakType Cloud.lnk"
   Delete "$SMPROGRAMS\SpeakType Cloud\Uninstall SpeakType Cloud.lnk"
   RMDir "$SMPROGRAMS\SpeakType Cloud"
