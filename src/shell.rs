@@ -1,17 +1,150 @@
 use crate::app::SpeakTypeCloudApp;
 use crate::config::AppConfig;
+use crate::providers;
 use crate::secrets;
 use crate::updater::{self, StagedUpdate, UpdateManifest};
 use eframe::egui;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Mutex;
 use std::time::Duration;
+
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Foundation::RECT;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetWindowLongPtrW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
+    IsWindowVisible, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, WS_EX_APPWINDOW,
+    WS_EX_TOOLWINDOW,
+};
+
+/// Saved normal-window position, captured at hide time and restored on show.
+/// (x, y, width, height) — only meaningful when off-screen is active.
+#[cfg(target_os = "windows")]
+static SAVED_RECT: Mutex<Option<(i32, i32, i32, i32)>> = Mutex::new(None);
+
+/// Cached provider selection for clearing stale model fetch errors.
+static PROVIDER_CACHE: Mutex<Option<crate::config::ProviderKind>> = Mutex::new(None);
+
+/// Resolve the real application window on every lifecycle operation.
+///
+/// The eframe/winit process also owns transient renderer/helper windows. A
+/// cached "first window" handle can therefore point at the wrong HWND. Walk
+/// top-level windows, then require both this process's PID and the product
+/// title. This also works after the main window is moved off-screen and has
+/// its taskbar style changed.
+#[cfg(target_os = "windows")]
+unsafe fn find_main_hwnd() -> Option<*mut std::ffi::c_void> {
+    unsafe extern "system" fn enum_callback(hwnd: *mut std::ffi::c_void, lparam: isize) -> i32 {
+        let mut owner_pid = 0;
+        unsafe {
+            GetWindowThreadProcessId(hwnd, &mut owner_pid);
+        }
+        if owner_pid != unsafe { GetCurrentProcessId() } || unsafe { IsWindowVisible(hwnd) } == 0 {
+            return 1;
+        }
+
+        let mut title = [0u16; 64];
+        let length = unsafe { GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32) };
+        let expected: Vec<u16> = "SpeakType Cloud".encode_utf16().collect();
+        if length > 0 && title[..length as usize] == expected[..] {
+            unsafe {
+                *(lparam as *mut *mut std::ffi::c_void) = hwnd;
+            }
+            0
+        } else {
+            1
+        }
+    }
+
+    let mut candidate: *mut std::ffi::c_void = std::ptr::null_mut();
+    unsafe {
+        EnumWindows(
+            Some(enum_callback),
+            &mut candidate as *mut *mut std::ffi::c_void as isize,
+        );
+    }
+    (!candidate.is_null()).then_some(candidate)
+}
+
+/// Save the current window rectangle, then move the window off-screen so it
+/// is invisible despite being non-minimized and visible to the event loop.
+/// Repeated calls while already hidden keep the original visible rectangle.
+#[cfg(target_os = "windows")]
+unsafe fn hide_window_offscreen() {
+    if let Some(hwnd) = unsafe { find_main_hwnd() } {
+        // 1. Save the current visible rect only once per hide/show cycle.
+        let mut guard = SAVED_RECT.lock().expect("SAVED_RECT lock poisoned");
+        if guard.is_none() {
+            let mut rect = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
+            if unsafe { GetWindowRect(hwnd, &mut rect) } != 0 {
+                *guard = Some((
+                    rect.left,
+                    rect.top,
+                    rect.right - rect.left,
+                    rect.bottom - rect.top,
+                ));
+            }
+        }
+        drop(guard);
+        // 2. Move off-screen (extreme negative coords) — window stays visible
+        //    and non-minimised so eframe's event loop keeps running.
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                -32000,
+                -32000,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
+/// Restore the window to its saved position and size (captured by
+/// `hide_window_offscreen`).  If no saved rect exists the call is a no-op.
+/// The window is brought back to the visible desktop area.
+#[cfg(target_os = "windows")]
+unsafe fn show_window_restore() {
+    let Some(hwnd) = (unsafe { find_main_hwnd() }) else {
+        return;
+    };
+    let rect = { SAVED_RECT.lock().expect("SAVED_RECT lock poisoned").take() };
+    if let Some((x, y, w, h)) = rect {
+        let restored = unsafe {
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                x,
+                y,
+                w,
+                h,
+                SWP_NOZORDER | SWP_SHOWWINDOW,
+            )
+        };
+        if restored == 0 {
+            // Keep the rectangle so a later tray event can retry rather than
+            // permanently losing the user's last visible position.
+            *SAVED_RECT.lock().expect("SAVED_RECT lock poisoned") = Some((x, y, w, h));
+        }
+    }
+}
 
 pub struct AppleShell {
     app: SpeakTypeCloudApp,
     tray: Option<SystemTray>,
     exit_requested: bool,
     window_hidden: bool,
-    api_key_window_open: bool,
+    settings_window_open: bool,
     show_api_keys: bool,
     openai_key_edit: String,
     xai_key_edit: String,
@@ -21,6 +154,19 @@ pub struct AppleShell {
     update_window_open: bool,
     update_state: UpdateState,
     update_rx: Option<Receiver<UpdateWorkerResult>>,
+    // Model list state
+    openai_models: Vec<String>,
+    openrouter_models: Vec<String>,
+    models_loading: bool,
+    models_error: Option<String>,
+    models_rx: Option<Receiver<ModelsFetchResult>>,
+}
+
+#[derive(Clone)]
+enum ModelsFetchResult {
+    OpenAi(Vec<String>),
+    OpenRouter(Vec<String>),
+    Error(String),
 }
 
 struct KeyMessage {
@@ -88,7 +234,7 @@ impl AppleShell {
             tray,
             exit_requested: false,
             window_hidden: false,
-            api_key_window_open: false,
+            settings_window_open: false,
             show_api_keys: false,
             openai_key_edit: String::new(),
             xai_key_edit: String::new(),
@@ -101,6 +247,11 @@ impl AppleShell {
                 Err(error) => UpdateState::Disabled(error),
             },
             update_rx: None,
+            openai_models: Vec::new(),
+            openrouter_models: Vec::new(),
+            models_loading: false,
+            models_error: None,
+            models_rx: None,
         }
     }
 
@@ -113,6 +264,8 @@ impl AppleShell {
                     self.show_from_tray(ctx);
                 }
                 TrayAction::Exit => {
+                    // Reuse request_exit so all exit logic (exit_requested,
+                    // Close command, backup repaint) stays in one place.
                     self.request_exit(ctx);
                 }
             }
@@ -126,8 +279,15 @@ impl AppleShell {
                 CloseDecision::Hide => {
                     self.window_hidden = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                    // Backup wake path if a tray handler missed wiring.
+                    // Move the window off-screen and remove its taskbar button.
+                    // This keeps the window non-minimised and visible-to-winit, so
+                    // eframe 0.27's event loop keeps running and tray channel
+                    // polling via update() continues to work.
+                    #[cfg(target_os = "windows")]
+                    unsafe {
+                        hide_window_offscreen();
+                        window_hide_ext_style();
+                    }
                     ctx.request_repaint_after(Duration::from_millis(250));
                 }
                 CloseDecision::Exit => {
@@ -138,17 +298,34 @@ impl AppleShell {
             }
         }
 
-        // Keep a low-rate backup repaint while hidden so tray actions remain
-        // recoverable even if an event handler failed to wake the loop.
-        if self.window_hidden && !self.exit_requested {
+        // Keep a low-rate backup repaint so tray actions remain recoverable
+        // even if a tray handler failed to wake the loop.
+        //
+        // Two cases must be covered:
+        //   (a) window_hidden  — the egui event loop does not automatically
+        //       repaint hidden windows.  Without this backup the tray would
+        //       never be polled, making Show / Exit unrecoverable.
+        //   (b) exit_requested — request_exit has sent Close but it has not
+        //       yet been delivered.  The old guard !exit_requested stopped
+        //       repainting here, which could stall the exit.
+
+        // SAFETY for (b): once close_requested fires and
+        // CloseDecision::Exit is taken, the app is dropped on that same
+        // frame, so any outstanding repaint_after is harmless.
+        if should_backup_repaint(self.window_hidden, self.exit_requested) {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
     }
 
     fn show_from_tray(&mut self, ctx: &egui::Context) {
         self.window_hidden = false;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        // Restore the app window position (undo off-screen) and extended style
+        // (undo WS_EX_TOOLWINDOW) so the taskbar button reappears.
+        #[cfg(target_os = "windows")]
+        unsafe {
+            show_window_restore();
+            window_show_ext_style();
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         ctx.request_repaint();
     }
@@ -156,11 +333,7 @@ impl AppleShell {
     fn request_exit(&mut self, ctx: &egui::Context) {
         self.exit_requested = true;
         self.window_hidden = false;
-        // When exiting from tray the window may be hidden. Restore it first so
-        // the Close command is delivered through the normal close-requested
-        // path on a subsequent frame (ViewportCommands apply after update).
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        // ViewportCommand::Close works regardless of current visibility.
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         ctx.request_repaint();
     }
@@ -173,40 +346,41 @@ impl AppleShell {
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if crate::theme::settings_button_enabled(
-                        ui,
-                        self.tray.is_some(),
-                        "隱藏到系統匣",
-                    )
-                    .on_disabled_hover_text("系統匣初始化失敗，請使用退出程式")
-                    .clicked()
+                    if crate::theme::secondary_button(ui, "隱藏到系統匣")
+                        .on_disabled_hover_text("系統匣初始化失敗，請使用退出程式")
+                        .clicked()
                     {
                         hide = true;
                     }
-                    if crate::theme::settings_button(ui, "退出程式").clicked() {
+                    if crate::theme::destructive_button(ui, "退出程式").clicked() {
                         exit = true;
                     }
                 });
             });
         if hide {
             self.window_hidden = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            #[cfg(target_os = "windows")]
+            unsafe {
+                hide_window_offscreen();
+                window_hide_ext_style();
+            }
+            ctx.request_repaint_after(Duration::from_millis(250));
         }
         if exit {
             self.request_exit(ctx);
         }
     }
 
-    fn show_api_key_launcher(&mut self, ctx: &egui::Context) {
-        egui::Area::new(egui::Id::new("api-key-launcher"))
+    fn show_settings_launcher(&mut self, ctx: &egui::Context) {
+        egui::Area::new(egui::Id::new("settings-launcher"))
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-18.0, 18.0))
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                if crate::theme::settings_button(ui, "🔑  API 金鑰")
-                    .on_hover_text("設定 OpenAI、xAI 與 OpenRouter API Key")
+                if crate::theme::secondary_button(ui, "設定")
+                    .on_hover_text("供應商、模型、API Key 與辨識設定")
                     .clicked()
                 {
-                    self.api_key_window_open = true;
+                    self.settings_window_open = true;
                     self.key_message = None;
                 }
             });
@@ -217,7 +391,7 @@ impl AppleShell {
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-18.0, 58.0))
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                if crate::theme::settings_button(ui, "檢查更新").clicked() {
+                if crate::theme::secondary_button(ui, "檢查更新").clicked() {
                     self.update_window_open = true;
                 }
             });
@@ -271,6 +445,73 @@ impl AppleShell {
         });
     }
 
+    fn poll_model_fetch(&mut self) {
+        let result = self.models_rx.as_ref().and_then(|rx| rx.try_recv().ok());
+        let Some(result) = result else { return };
+        self.models_rx = None;
+        self.models_loading = false;
+        match result {
+            ModelsFetchResult::OpenAi(models) => {
+                self.openai_models = models;
+                self.models_error = None;
+            }
+            ModelsFetchResult::OpenRouter(models) => {
+                self.openrouter_models = models;
+                self.models_error = None;
+            }
+            ModelsFetchResult::Error(error) => {
+                self.models_error = Some(error);
+            }
+        }
+    }
+
+    fn start_fetch_models(&mut self, provider: ProviderKey) {
+        if self.models_loading {
+            return;
+        }
+        let (env_name, base_url) = match provider {
+            ProviderKey::OpenAi => (
+                self.app.config.openai.api_key_env.clone(),
+                self.app.config.openai.base_url.clone(),
+            ),
+            ProviderKey::OpenRouter => (
+                self.app.config.openrouter.api_key_env.clone(),
+                self.app.config.openrouter.base_url.clone(),
+            ),
+            ProviderKey::Xai => return, // xAI doesn't expose model selection
+        };
+        let api_key = match std::env::var(&env_name) {
+            Ok(k) => k,
+            Err(_) => {
+                self.models_error = Some(format!("找不到 {env_name}，請先設定該供應商的 API Key"));
+                return;
+            }
+        };
+        let (tx, rx) = mpsc::channel();
+        self.models_rx = Some(rx);
+        self.models_loading = true;
+        self.models_error = None;
+        std::thread::spawn(move || {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())
+                .and_then(|rt| {
+                    rt.block_on(providers::fetch_available_models(&base_url, &api_key))
+                        .map_err(|e| e.to_string())
+                });
+            let msg = match (&result, provider) {
+                (Ok(models), ProviderKey::OpenAi) => ModelsFetchResult::OpenAi(models.clone()),
+                (Ok(models), ProviderKey::OpenRouter) => {
+                    ModelsFetchResult::OpenRouter(models.clone())
+                }
+                (Ok(_), ProviderKey::Xai) => return,
+                (Err(error), _) => ModelsFetchResult::Error(error.clone()),
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
     fn show_update_window(&mut self, ctx: &egui::Context) {
         if !self.update_window_open {
             return;
@@ -289,14 +530,14 @@ impl AppleShell {
                 ui.add_space(8.0);
                 match &self.update_state {
                     UpdateState::Disabled(reason) => {
-                        ui.colored_label(egui::Color32::from_rgb(190, 105, 0), reason);
+                        ui.colored_label(crate::theme::colors::ORANGE_WARNING, reason);
                         ui.hyperlink_to(
                             "手動開啟 GitHub Releases",
                             "https://github.com/stevenke1981/SpeakType-Cloud/releases",
                         );
                     }
                     UpdateState::Idle => {
-                        if crate::theme::settings_button(ui, "檢查 GitHub Releases").clicked() {
+                        if crate::theme::primary_button(ui, "檢查 GitHub Releases").clicked() {
                             action = Some(UpdateAction::Check);
                         }
                     }
@@ -306,14 +547,14 @@ impl AppleShell {
                     }
                     UpdateState::UpToDate => {
                         ui.label("目前已是最新版本。");
-                        if crate::theme::settings_button(ui, "再次檢查").clicked() {
+                        if crate::theme::primary_button(ui, "再次檢查").clicked() {
                             action = Some(UpdateAction::Check);
                         }
                     }
                     UpdateState::Available(manifest) => {
                         ui.strong(format!("可用版本：{}", manifest.version));
                         ui.label("按下後才會下載至暫存資料夾並驗證 SHA-256 與 Authenticode 狀態。");
-                        if crate::theme::settings_button(ui, "下載並驗證").clicked() {
+                        if crate::theme::primary_button(ui, "下載並驗證").clicked() {
                             action = Some(UpdateAction::Stage(manifest.clone()));
                         }
                     }
@@ -326,10 +567,10 @@ impl AppleShell {
                         ui.label("Authenticode：簽章有效，且簽署憑證符合內建信任根");
                         ui.label(format!("暫存路徑：{}", staged.installer_path.display()));
                         ui.colored_label(
-                            egui::Color32::from_rgb(190, 105, 0),
+                            crate::theme::colors::ORANGE_WARNING,
                             "下一步會啟動可見的安裝精靈；不會靜默安裝。",
                         );
-                        if crate::theme::settings_button(ui, "啟動安裝程式").clicked() {
+                        if crate::theme::primary_button(ui, "啟動安裝程式").clicked() {
                             action = Some(UpdateAction::Launch(staged.clone()));
                         }
                     }
@@ -337,8 +578,8 @@ impl AppleShell {
                         ui.label("安裝精靈已啟動；請在安裝視窗中確認或取消。");
                     }
                     UpdateState::Error(error) => {
-                        ui.colored_label(egui::Color32::from_rgb(215, 58, 73), error);
-                        if crate::theme::settings_button(ui, "重新檢查").clicked() {
+                        ui.colored_label(crate::theme::colors::RED_ERROR, error);
+                        if crate::theme::primary_button(ui, "重新檢查").clicked() {
                             action = Some(UpdateAction::Check);
                         }
                     }
@@ -361,9 +602,21 @@ impl AppleShell {
         }
     }
 
-    fn show_api_key_window(&mut self, ctx: &egui::Context) {
-        if !self.api_key_window_open {
+    fn show_settings_window(&mut self, ctx: &egui::Context) {
+        if !self.settings_window_open {
             return;
+        }
+
+        // Clear stale model errors when settings opens
+        let provider_changed = {
+            let prev = PROVIDER_CACHE
+                .lock()
+                .expect("PROVIDER_CACHE lock poisoned")
+                .replace(self.app.config.provider);
+            prev.is_some() && prev != Some(self.app.config.provider)
+        };
+        if provider_changed {
+            self.models_error = None;
         }
 
         let openai_env = self.app.config.openai.api_key_env.clone();
@@ -372,122 +625,336 @@ impl AppleShell {
         let openai_configured = secrets::is_api_key_configured(&openai_env);
         let xai_configured = secrets::is_api_key_configured(&xai_env);
         let openrouter_configured = secrets::is_api_key_configured(&openrouter_env);
-        let mut action = None;
-        let mut open = self.api_key_window_open;
+        let mut key_action = None;
+        let mut config_save = false;
+        let mut open = self.settings_window_open;
 
-        egui::Window::new("API 金鑰")
-            .id(egui::Id::new("api-key-settings-window"))
+        egui::Window::new("設定")
+            .id(egui::Id::new("settings-window"))
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .collapsible(false)
             .resizable(false)
-            .default_width(520.0)
+            .default_width(720.0)
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new("連接語音辨識服務").size(20.0).strong());
+                egui::ScrollArea::vertical()
+                    .max_height(720.0)
+                    .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new("API 與辨識設定")
+                        .size(20.0)
+                        .color(crate::theme::colors::TEXT_PRIMARY)
+                        .strong(),
+                );
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                egui::ComboBox::from_label("辨識模式")
+                    .selected_text(self.app.config.transcription_mode.label())
+                    .show_ui(ui, |ui| {
+                        for mode in [
+                            crate::config::TranscriptionMode::BatchPtt,
+                            crate::config::TranscriptionMode::RealtimePtt,
+                            crate::config::TranscriptionMode::ContinuousDictation,
+                        ] {
+                            ui.selectable_value(
+                                &mut self.app.config.transcription_mode,
+                                mode,
+                                mode.label(),
+                            );
+                        }
+                    });
+                egui::ComboBox::from_label("供應商")
+                    .selected_text(self.app.config.provider.label())
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.app.config.provider,
+                            crate::config::ProviderKind::OpenAi,
+                            "OpenAI",
+                        );
+                        ui.selectable_value(
+                            &mut self.app.config.provider,
+                            crate::config::ProviderKind::Xai,
+                            "xAI",
+                        );
+                        ui.selectable_value(
+                            &mut self.app.config.provider,
+                            crate::config::ProviderKind::OpenRouter,
+                            "OpenRouter",
+                        );
+                    });
+                ui.horizontal(|ui| {
+                    ui.label("語言代碼");
+                    ui.text_edit_singleline(&mut self.app.config.language);
+                });
+                ui.label("提示詞／詞彙背景");
+                ui.text_edit_multiline(&mut self.app.config.prompt);
+
+                // Provider-specific settings
+                match self.app.config.provider {
+                    crate::config::ProviderKind::OpenAi => {
+                        ui.horizontal(|ui| {
+                            ui.label("模型");
+                            if self.openai_models.is_empty() {
+                                ui.text_edit_singleline(&mut self.app.config.openai.model);
+                            } else {
+                                egui::ComboBox::from_id_source("openai-model")
+                                    .selected_text(&self.app.config.openai.model)
+                                    .show_ui(ui, |cb_ui| {
+                                        for model in &self.openai_models {
+                                            cb_ui.selectable_value(
+                                                &mut self.app.config.openai.model,
+                                                model.clone(),
+                                                model.as_str(),
+                                            );
+                                        }
+                                    });
+                            }
+                            if self.models_loading {
+                                ui.add(egui::Spinner::new());
+                            } else if crate::theme::secondary_button(ui, "↻ 重新整理").clicked() {
+                                self.start_fetch_models(ProviderKey::OpenAi);
+                            }
+                        });
+                        if self.app.config.transcription_mode.is_realtime() {
+                            ui.horizontal(|ui| {
+                                ui.label("Realtime 模型");
+                                ui.text_edit_singleline(
+                                    &mut self.app.config.realtime.openai_model,
+                                );
+                            });
+                            egui::ComboBox::from_label("Transcription delay")
+                                .selected_text(
+                                    self.app.config.realtime.openai_transcription_delay.label(),
+                                )
+                                .show_ui(ui, |ui| {
+                                    for delay in [
+                                        crate::config::OpenAiTranscriptionDelay::Minimal,
+                                        crate::config::OpenAiTranscriptionDelay::Low,
+                                        crate::config::OpenAiTranscriptionDelay::Medium,
+                                        crate::config::OpenAiTranscriptionDelay::High,
+                                        crate::config::OpenAiTranscriptionDelay::XHigh,
+                                    ] {
+                                        ui.selectable_value(
+                                            &mut self.app.config.realtime.openai_transcription_delay,
+                                            delay,
+                                            delay.label(),
+                                        );
+                                    }
+                                });
+                            ui.label("OpenAI gpt-realtime-whisper 使用本地 VAD，不啟用 server VAD。");
+                        }
+                    }
+                    crate::config::ProviderKind::OpenRouter => {
+                        ui.horizontal(|ui| {
+                            ui.label("模型");
+                            if self.openrouter_models.is_empty() {
+                                ui.text_edit_singleline(&mut self.app.config.openrouter.model);
+                            } else {
+                                egui::ComboBox::from_id_source("openrouter-model")
+                                    .selected_text(&self.app.config.openrouter.model)
+                                    .show_ui(ui, |cb_ui| {
+                                        for model in &self.openrouter_models {
+                                            cb_ui.selectable_value(
+                                                &mut self.app.config.openrouter.model,
+                                                model.clone(),
+                                                model.as_str(),
+                                            );
+                                        }
+                                    });
+                            }
+                            if self.models_loading {
+                                ui.add(egui::Spinner::new());
+                            } else if crate::theme::secondary_button(ui, "↻ 重新整理").clicked() {
+                                self.start_fetch_models(ProviderKey::OpenRouter);
+                            }
+                        });
+                        if self.app.config.transcription_mode.is_realtime() {
+                            ui.colored_label(
+                                crate::theme::colors::ORANGE_WARNING,
+                                "OpenRouter 僅支援 Batch / PTT 模式。請切換至 Batch / PTT。",
+                            );
+                        } else {
+                            ui.label("OpenRouter 僅支援 Batch / PTT 模式；選用 Realtime 模式時，設定驗證會拒絕。");
+                        }
+                    }
+                    crate::config::ProviderKind::Xai => {
+                        ui.checkbox(
+                            &mut self.app.config.xai.format_text,
+                            "支援的語言啟用文字格式化",
+                        );
+                        ui.label("xAI Keyterms（每行一個）");
+                        ui.text_edit_multiline(&mut self.app.keyterms_edit);
+                        if self.app.config.transcription_mode.is_realtime() {
+                            ui.checkbox(
+                                &mut self.app.config.realtime.xai_smart_turn_enabled,
+                                "使用 xAI server Smart Turn（選配）",
+                            );
+                            if self.app.config.realtime.xai_smart_turn_enabled {
+                                ui.add(
+                                    egui::Slider::new(
+                                        &mut self.app.config.realtime.xai_smart_turn_threshold,
+                                        0.0..=1.0,
+                                    )
+                                    .text("Smart Turn threshold"),
+                                );
+                                ui.add(
+                                    egui::Slider::new(
+                                        &mut self.app.config.realtime.xai_smart_turn_timeout_ms,
+                                        1..=5_000,
+                                    )
+                                    .text("Smart Turn timeout (ms)"),
+                                );
+                            }
+                        }
+                    }
+                }
+                if let Some(err) = &self.models_error {
+                    ui.colored_label(crate::theme::colors::RED_ERROR, err);
+                }
+                ui.checkbox(
+                    &mut self.app.config.text_processing.normalize_chinese_punctuation,
+                    "正規化中文標點",
+                );
+                if self.app.config.transcription_mode
+                    == crate::config::TranscriptionMode::ContinuousDictation
+                {
+                    ui.add(
+                        egui::Slider::new(
+                            &mut self.app.config.realtime.vad_rms_threshold,
+                            0.001..=0.2,
+                        )
+                        .text("本地 VAD RMS threshold"),
+                    );
+                    ui.add(
+                        egui::Slider::new(
+                            &mut self.app.config.realtime.vad_silence_ms,
+                            100..=3_000,
+                        )
+                        .text("句尾靜音 (ms)"),
+                    );
+                }
+                egui::ComboBox::from_label("中文輸出")
+                    .selected_text(self.app.config.text_processing.chinese_variant.label())
+                    .show_ui(ui, |ui| {
+                        for variant in [
+                            crate::config::ChineseVariant::Preserve,
+                            crate::config::ChineseVariant::Traditional,
+                            crate::config::ChineseVariant::Simplified,
+                        ] {
+                            ui.selectable_value(
+                                &mut self.app.config.text_processing.chinese_variant,
+                                variant,
+                                variant.label(),
+                            );
+                        }
+                    });
+                ui.checkbox(
+                    &mut self.app.config.text_processing.voice_commands_enabled,
+                    "啟用語音命令（僅完整片語匹配）",
+                );
+
+                crate::theme::section_header(ui, "API 金鑰");
                 ui.label(
                     egui::RichText::new(
                         "金鑰會儲存在 Windows Credential Manager，不會寫入 config.toml；舊版使用者環境變數會在啟動時安全遷移。",
                     )
-                    .color(egui::Color32::from_rgb(110, 110, 115)),
+                    .size(12.0)
+                    .color(crate::theme::colors::TEXT_SECONDARY),
                 );
+                ui.add_space(10.0);
+
+                // OpenAI card
+                crate::theme::card_begin(ui, None);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("OpenAI").size(17.0).color(crate::theme::colors::TEXT_PRIMARY).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (label, color) = configured_badge(openai_configured);
+                        ui.colored_label(color, label);
+                    });
+                });
+                crate::theme::caption(ui, &format!("環境變數：{openai_env}"));
+                ui.add_space(4.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.openai_key_edit)
+                        .password(!self.show_api_keys)
+                        .hint_text("貼上 OpenAI API Key")
+                        .desired_width(f32::INFINITY),
+                );
+                ui.horizontal(|ui| {
+                    if crate::theme::primary_button(ui, "儲存 OpenAI Key").clicked() {
+                        key_action = Some(KeyAction::Save(ProviderKey::OpenAi));
+                    }
+                    if crate::theme::secondary_button(ui, "清除").clicked()
+                        && openai_configured
+                    {
+                        key_action = Some(KeyAction::Clear(ProviderKey::OpenAi));
+                    }
+                });
+                crate::theme::card_end(ui);
+
                 ui.add_space(8.0);
-
-                ui.group(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("OpenAI").size(17.0).strong());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let (label, color) = configured_badge(openai_configured);
-                            ui.colored_label(color, label);
-                        });
-                    });
-                    ui.label(
-                        egui::RichText::new(format!("環境變數：{openai_env}"))
-                            .small()
-                            .color(egui::Color32::from_rgb(110, 110, 115)),
-                    );
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.openai_key_edit)
-                            .password(!self.show_api_keys)
-                            .hint_text("貼上 OpenAI API Key")
-                            .desired_width(f32::INFINITY),
-                    );
-                    ui.horizontal(|ui| {
-                        if crate::theme::settings_button(ui, "儲存 OpenAI Key").clicked() {
-                            action = Some(KeyAction::Save(ProviderKey::OpenAi));
-                        }
-                        if crate::theme::settings_button_enabled(ui, openai_configured, "清除")
-                            .clicked()
-                        {
-                            action = Some(KeyAction::Clear(ProviderKey::OpenAi));
-                        }
+                // xAI card
+                crate::theme::card_begin(ui, None);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("xAI").size(17.0).color(crate::theme::colors::TEXT_PRIMARY).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (label, color) = configured_badge(xai_configured);
+                        ui.colored_label(color, label);
                     });
                 });
+                crate::theme::caption(ui, &format!("環境變數：{xai_env}"));
+                ui.add_space(4.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.xai_key_edit)
+                        .password(!self.show_api_keys)
+                        .hint_text("貼上 xAI API Key")
+                        .desired_width(f32::INFINITY),
+                );
+                ui.horizontal(|ui| {
+                    if crate::theme::primary_button(ui, "儲存 xAI Key").clicked() {
+                        key_action = Some(KeyAction::Save(ProviderKey::Xai));
+                    }
+                    if crate::theme::secondary_button(ui, "清除").clicked()
+                        && xai_configured
+                    {
+                        key_action = Some(KeyAction::Clear(ProviderKey::Xai));
+                    }
+                });
+                crate::theme::card_end(ui);
 
-                ui.add_space(6.0);
-                ui.group(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("xAI").size(17.0).strong());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let (label, color) = configured_badge(xai_configured);
-                            ui.colored_label(color, label);
-                        });
-                    });
-                    ui.label(
-                        egui::RichText::new(format!("環境變數：{xai_env}"))
-                            .small()
-                            .color(egui::Color32::from_rgb(110, 110, 115)),
-                    );
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.xai_key_edit)
-                            .password(!self.show_api_keys)
-                            .hint_text("貼上 xAI API Key")
-                            .desired_width(f32::INFINITY),
-                    );
-                    ui.horizontal(|ui| {
-                        if crate::theme::settings_button(ui, "儲存 xAI Key").clicked() {
-                            action = Some(KeyAction::Save(ProviderKey::Xai));
-                        }
-                        if crate::theme::settings_button_enabled(ui, xai_configured, "清除")
-                            .clicked()
-                        {
-                            action = Some(KeyAction::Clear(ProviderKey::Xai));
-                        }
+                ui.add_space(8.0);
+                // OpenRouter card
+                crate::theme::card_begin(ui, None);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("OpenRouter").size(17.0).color(crate::theme::colors::TEXT_PRIMARY).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (label, color) = configured_badge(openrouter_configured);
+                        ui.colored_label(color, label);
                     });
                 });
-
-                ui.add_space(6.0);
-                ui.group(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("OpenRouter").size(17.0).strong());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let (label, color) = configured_badge(openrouter_configured);
-                            ui.colored_label(color, label);
-                        });
-                    });
-                    ui.label(
-                        egui::RichText::new(format!("環境變數：{openrouter_env}"))
-                            .small()
-                            .color(egui::Color32::from_rgb(110, 110, 115)),
-                    );
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.openrouter_key_edit)
-                            .password(!self.show_api_keys)
-                            .hint_text("貼上 OpenRouter API Key")
-                            .desired_width(f32::INFINITY),
-                    );
-                    ui.horizontal(|ui| {
-                        if crate::theme::settings_button(ui, "儲存 OpenRouter Key").clicked() {
-                            action = Some(KeyAction::Save(ProviderKey::OpenRouter));
-                        }
-                        if crate::theme::settings_button_enabled(ui, openrouter_configured, "清除")
-                            .clicked()
-                        {
-                            action = Some(KeyAction::Clear(ProviderKey::OpenRouter));
-                        }
-                    });
+                crate::theme::caption(ui, &format!("環境變數：{openrouter_env}"));
+                ui.add_space(4.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.openrouter_key_edit)
+                        .password(!self.show_api_keys)
+                        .hint_text("貼上 OpenRouter API Key")
+                        .desired_width(f32::INFINITY),
+                );
+                ui.horizontal(|ui| {
+                    if crate::theme::primary_button(ui, "儲存 OpenRouter Key").clicked() {
+                        key_action = Some(KeyAction::Save(ProviderKey::OpenRouter));
+                    }
+                    if crate::theme::secondary_button(ui, "清除").clicked()
+                        && openrouter_configured
+                    {
+                        key_action = Some(KeyAction::Clear(ProviderKey::OpenRouter));
+                    }
                 });
+                crate::theme::card_end(ui);
 
-                ui.add_space(6.0);
+                ui.add_space(10.0);
                 ui.checkbox(&mut self.show_api_keys, "顯示輸入中的 API Key");
 
                 ui.add_space(8.0);
@@ -498,7 +965,7 @@ impl AppleShell {
                 );
                 ui.label(
                     egui::RichText::new(
-                        "變更後需要前往主頁面點擊「儲存設定」才會生效。",
+                        "變更後需要點擊下方「儲存設定」才會生效。",
                     )
                     .small()
                     .color(egui::Color32::from_rgb(110, 110, 115)),
@@ -551,23 +1018,32 @@ impl AppleShell {
 
                 if let Some(warning) = &self.startup_warning {
                     ui.colored_label(
-                        egui::Color32::from_rgb(190, 105, 0),
+                        crate::theme::colors::ORANGE_WARNING,
                         format!("啟動提醒：{warning}"),
                     );
                 }
                 if let Some(message) = &self.key_message {
                     let color = if message.success {
-                        egui::Color32::from_rgb(36, 138, 61)
+                        crate::theme::colors::GREEN_SUCCESS
                     } else {
-                        egui::Color32::from_rgb(215, 58, 73)
+                        crate::theme::colors::RED_ERROR
                     };
                     ui.colored_label(color, &message.text);
                 }
+
+                ui.add_space(16.0);
+                if crate::theme::primary_button(ui, "儲存設定").clicked() {
+                    config_save = true;
+                }
+                }); // ScrollArea
             });
 
-        self.api_key_window_open = open;
-        if let Some(action) = action {
+        self.settings_window_open = open;
+        if let Some(action) = key_action {
             self.apply_key_action(action);
+        }
+        if config_save {
+            self.app.save_settings();
         }
     }
 
@@ -609,7 +1085,7 @@ impl AppleShell {
             self.key_message = Some(KeyMessage {
                 success: false,
                 text: format!(
-                    "{provider_name} 環境變數名稱「{env_name}」不合法，必須以字母或底線開頭且僅含字母、數字與底線。請在「API Key 環境變數名稱設定」中修正後至主頁點擊「儲存設定」。"
+                    "{provider_name} 環境變數名稱「{env_name}」不合法，必須以字母或底線開頭且僅含字母、數字與底線。請修正後點擊下方「儲存設定」。"
                 ),
             });
             return;
@@ -651,10 +1127,11 @@ impl eframe::App for AppleShell {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.handle_window_lifecycle(ctx);
         self.poll_update_worker();
+        self.poll_model_fetch();
         eframe::App::update(&mut self.app, ctx, frame);
-        self.show_api_key_launcher(ctx);
+        self.show_settings_launcher(ctx);
         self.show_update_launcher(ctx);
-        self.show_api_key_window(ctx);
+        self.show_settings_window(ctx);
         self.show_update_window(ctx);
         self.show_window_controls(ctx);
     }
@@ -691,12 +1168,84 @@ fn close_decision(tray_available: bool, exit_requested: bool) -> CloseDecision {
     }
 }
 
+/// Decide whether the backup repaint timer should be armed.
+///
+/// The backup keeps the egui event loop alive for two critical states:
+///   * `window_hidden` — after the user hides to tray (window is
+///     moved off-screen with WS_EX_TOOLWINDOW).  A repaint_after timer
+///     is kept so the tray channel is polled even if a tray callback's
+///     request_repaint() does not fully propagate through winit.
+///   * `exit_requested` — `request_exit` has sent `Close` but the
+///     event has not yet been delivered. Stopping repaint here could
+///     stall the exit indefinitely.
+///
+/// Once `CloseDecision::Exit` is taken and the native close proceeds,
+/// the eframe App is dropped on that same frame, so any outstanding
+/// `repaint_after` is harmless.
+fn should_backup_repaint(window_hidden: bool, exit_requested: bool) -> bool {
+    window_hidden || exit_requested
+}
+
 fn append_warning(current: &mut Option<String>, warning: &str) {
     if let Some(current) = current {
         current.push('\n');
         current.push_str(warning);
     } else {
         *current = Some(warning.to_string());
+    }
+}
+
+/// Apply `WS_EX_TOOLWINDOW` and remove `WS_EX_APPWINDOW` so the window loses
+/// its taskbar entry. Safe to call multiple times.
+#[cfg(target_os = "windows")]
+unsafe fn window_hide_ext_style() {
+    if let Some(hwnd) = unsafe { find_main_hwnd() } {
+        // SAFETY: hwnd is the valid main window HWND obtained via
+        // EnumWindows + PID/title verification above.
+        unsafe {
+            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            SetWindowLongPtrW(
+                hwnd,
+                GWL_EXSTYLE,
+                (style & !(WS_EX_APPWINDOW as isize)) | WS_EX_TOOLWINDOW as isize,
+            );
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
+/// Remove `WS_EX_TOOLWINDOW` (and ensure `WS_EX_APPWINDOW`) so the taskbar
+/// button reappears.  Safe to call multiple times.
+#[cfg(target_os = "windows")]
+unsafe fn window_show_ext_style() {
+    if let Some(hwnd) = unsafe { find_main_hwnd() } {
+        // SAFETY: hwnd is the valid main window HWND obtained via
+        // EnumWindows + PID/title verification above.
+        unsafe {
+            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            SetWindowLongPtrW(
+                hwnd,
+                GWL_EXSTYLE,
+                (style & !(WS_EX_TOOLWINDOW as isize)) | WS_EX_APPWINDOW as isize,
+            );
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE,
+            );
+        }
     }
 }
 
@@ -841,9 +1390,9 @@ where
 
 fn configured_badge(configured: bool) -> (&'static str, egui::Color32) {
     if configured {
-        ("● 已設定", egui::Color32::from_rgb(36, 138, 61))
+        ("● 已設定", crate::theme::colors::GREEN_SUCCESS)
     } else {
-        ("○ 尚未設定", egui::Color32::from_rgb(110, 110, 115))
+        ("○ 尚未設定", crate::theme::colors::TEXT_SECONDARY)
     }
 }
 
@@ -898,6 +1447,37 @@ mod tests {
             KeyAction::Clear(ProviderKey::OpenRouter),
         ];
         assert_eq!(actions.len(), 6);
+    }
+
+    #[test]
+    fn backup_repaint_covers_hidden_and_pending_exit() {
+        // should_backup_repaint must return true when the window is hidden
+        // (tray polling) OR when exit is pending (between request_exit and
+        // close_requested), and only false when neither condition applies.
+        //
+        // Truth table:
+        //   hidden=false, exit=false  → false (visible, no exit)
+        //   hidden=true,  exit=false  → true  (tray mode — keep polling)
+        //   hidden=false, exit=true   → true  (pending exit — deliver Close)
+        //   hidden=true,  exit=true   → true  (both — keep repainting)
+        assert!(!should_backup_repaint(false, false));
+        assert!(should_backup_repaint(true, false));
+        assert!(should_backup_repaint(false, true));
+        assert!(should_backup_repaint(true, true));
+    }
+
+    #[test]
+    fn exit_in_drain_actions_always_takes_priority() {
+        // Verify that drain_tray_actions returns Exit even when
+        // interspersed with multiple Show events.
+        let actions = vec![TrayAction::Show, TrayAction::Show, TrayAction::Exit];
+        assert_eq!(drain_tray_actions(actions), Some(TrayAction::Exit));
+
+        // A single Exit also works.
+        assert_eq!(
+            drain_tray_actions(vec![TrayAction::Exit]),
+            Some(TrayAction::Exit)
+        );
     }
 
     #[test]

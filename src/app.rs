@@ -1,8 +1,5 @@
 use crate::audio::{LiveAudioStats, RecordedAudio, Recorder};
-use crate::config::{
-    AppConfig, ChineseVariant, OpenAiTranscriptionDelay, ProviderKind, TranscriptionMode,
-    MAX_RECORDING_DURATION_SECS,
-};
+use crate::config::{AppConfig, ProviderKind, TranscriptionMode, MAX_RECORDING_DURATION_SECS};
 use crate::error::{AppError, AppResult};
 use crate::history::{self, HistoryEntry};
 use crate::hotkey::{GlobalHotkey, HotkeyEvent};
@@ -42,8 +39,9 @@ pub struct SpeakTypeCloudApp {
     last_text: String,
     last_error: Option<String>,
     hotkey_edit: String,
-    keyterms_edit: String,
+    pub(crate) keyterms_edit: String,
     config_load_error: Option<String>,
+    next_hotkey_retry: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -118,6 +116,7 @@ impl SpeakTypeCloudApp {
             Err(error) => (None, Some(error)),
         };
         let has_startup_error = config_load_error.is_some() || hotkey_error.is_some();
+        let hotkey_failed_at_startup = hotkey_error.is_some();
         Self {
             hotkey_edit: config.hotkey.clone(),
             keyterms_edit: config.xai.keyterms.join("\n"),
@@ -148,6 +147,11 @@ impl SpeakTypeCloudApp {
             last_text: String::new(),
             last_error: config_load_error.clone(),
             config_load_error,
+            next_hotkey_retry: if hotkey_failed_at_startup {
+                Some(Instant::now() + Duration::from_secs(4))
+            } else {
+                None
+            },
         }
     }
 
@@ -259,15 +263,52 @@ impl SpeakTypeCloudApp {
     }
 
     fn poll_hotkey(&mut self) {
+        // If the hotkey is missing (initial creation failed or runtime death),
+        // periodically try to recreate it.  This handles transient system
+        // conditions (antivirus delay, UIPI, thread timing) that later resolve.
+        if self.hotkey.is_none() {
+            // Stagger retries: first attempt after ~4 seconds, then every
+            // ~4 seconds.  This avoids a tight restart loop at 250 Hz.
+            let should_retry = self
+                .next_hotkey_retry
+                .is_none_or(|deadline| Instant::now() >= deadline);
+            if should_retry {
+                match GlobalHotkey::new(&self.config.hotkey) {
+                    Ok(hotkey) => {
+                        self.hotkey = Some(hotkey);
+                        self.hotkey_error = None;
+                        self.status = "快捷鍵已啟動".to_string();
+                        self.next_hotkey_retry = None;
+                    }
+                    Err(error) => {
+                        self.hotkey_error = Some(error);
+                        self.next_hotkey_retry = Some(Instant::now() + Duration::from_secs(4));
+                    }
+                }
+            }
+        }
+
+        // Runtime death — the old listener thread has already exited and its
+        // hook is gone.  Recreate immediately (no staggering needed).
         if let Some(error) = self.hotkey.as_ref().and_then(GlobalHotkey::poll_error) {
-            self.hotkey = None;
-            self.hotkey_error = Some(error);
-            self.status = "全域快捷鍵不可用；仍可使用按鈕錄音".to_string();
+            self.hotkey_error = Some(error.clone());
+            match GlobalHotkey::new(&self.config.hotkey) {
+                Ok(hotkey) => {
+                    self.hotkey = Some(hotkey);
+                    self.hotkey_error = None;
+                    self.status = "快捷鍵已重新啟動".to_string();
+                }
+                Err(new_error) => {
+                    self.hotkey = None;
+                    self.hotkey_error = Some(new_error);
+                    self.status = "全域快捷鍵不可用；仍可使用按鈕錄音".to_string();
+                }
+            }
         }
 
         let mut events = Vec::new();
-        if let Some(hotkey) = &self.hotkey {
-            while let Some(event) = hotkey.poll() {
+        if let Some(hotkey) = &mut self.hotkey {
+            while let Some(event) = hotkey.poll_event() {
                 events.push(event);
             }
         }
@@ -547,7 +588,7 @@ impl SpeakTypeCloudApp {
         self.last_error = Some(error.to_string());
     }
 
-    fn save_settings(&mut self) {
+    pub(crate) fn save_settings(&mut self) {
         if self.realtime_worker.is_some() {
             self.cancel_realtime("Realtime session 已因儲存設定而停止");
         }
@@ -640,52 +681,98 @@ impl eframe::App for SpeakTypeCloudApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("SpeakType Cloud");
-            ui.label(match self.config.transcription_mode {
+            // MARK: - Header
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("SpeakType Cloud")
+                        .size(22.0)
+                        .color(crate::theme::colors::TEXT_PRIMARY)
+                        .strong(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    crate::theme::caption(ui, match self.config.transcription_mode {
+                        TranscriptionMode::BatchPtt => "Batch / PTT 模式",
+                        TranscriptionMode::RealtimePtt => "Realtime PTT 模式",
+                        TranscriptionMode::ContinuousDictation => "Continuous 模式",
+                    });
+                });
+            });
+            ui.add_space(2.0);
+            crate::theme::caption(ui, match self.config.transcription_mode {
                 TranscriptionMode::BatchPtt => {
-                    "Batch / PTT：按住全域快捷鍵說話，放開後才上傳辨識。"
+                    "按住全域快捷鍵說話，放開後才上傳辨識。"
                 }
                 TranscriptionMode::RealtimePtt => {
-                    "Realtime PTT：按住時明確開始串流，放開時手動 commit。"
+                    "按住時開始串流，放開時手動 commit。"
                 }
                 TranscriptionMode::ContinuousDictation => {
-                    "Continuous Dictation：按下開始後由本地 VAD 分段；再次按下停止。"
+                    "按下開始後由本地 VAD 分段；再次按下停止。"
                 }
             });
-            ui.separator();
+            ui.add_space(12.0);
 
+            // MARK: - Status card
+            crate::theme::card_begin(ui, None);
             ui.horizontal(|ui| {
-                ui.label("狀態：");
-                if self.recorder.is_recording() {
-                    ui.strong("🔴 錄音中");
-                } else if self.busy {
-                    ui.strong("☁ 辨識中");
-                } else {
-                    ui.strong(&self.status);
-                }
+                ui.label(egui::RichText::new("狀態").size(13.0).color(crate::theme::colors::TEXT_SECONDARY));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.recorder.is_recording() {
+                        crate::theme::recording_dot(ui, true);
+                        ui.strong(
+                            egui::RichText::new("錄音中")
+                                .size(15.0)
+                                .color(crate::theme::colors::RED_RECORDING),
+                        );
+                    } else if self.busy {
+                        crate::theme::processing_dot(ui);
+                        ui.strong(
+                            egui::RichText::new("辨識中")
+                                .size(15.0)
+                                .color(crate::theme::colors::ACCENT_BLUE),
+                        );
+                    } else {
+                        let msg = &self.status;
+                        ui.strong(
+                            egui::RichText::new(msg)
+                                .size(15.0)
+                                .color(crate::theme::colors::TEXT_PRIMARY),
+                        );
+                    }
+                });
             });
+            // Error / warning messages
             if let Some(error) = &self.last_error {
-                ui.colored_label(egui::Color32::RED, error);
+                ui.add_space(4.0);
+                ui.colored_label(crate::theme::colors::RED_ERROR, error);
             }
             if let Some(error) = &self.hotkey_error {
-                ui.colored_label(egui::Color32::RED, format!("全域快捷鍵不可用：{error}"));
+                ui.add_space(4.0);
+                ui.colored_label(
+                    crate::theme::colors::ORANGE_WARNING,
+                    format!("全域快捷鍵不可用：{error}"),
+                );
             }
             if let Some(stats) = &self.live_audio_stats {
                 let dropped = stats.dropped_chunks();
                 let capture_dropped = stats.dropped_capture_samples();
                 if dropped > 0 {
                     ui.colored_label(
-                        egui::Color32::YELLOW,
+                        crate::theme::colors::YELLOW_CAUTION,
                         format!("Realtime 音訊背壓：已丟棄 {dropped} 個 callback chunks"),
                     );
                 }
                 if capture_dropped > 0 {
                     ui.colored_label(
-                        egui::Color32::YELLOW,
+                        crate::theme::colors::YELLOW_CAUTION,
                         format!("錄音保留 ring 已覆寫／略過 {capture_dropped} 個 samples"),
                     );
                 }
             }
+            crate::theme::card_end(ui);
+
+            // MARK: - Action buttons
+            crate::theme::card_begin(ui, None);
             ui.horizontal(|ui| {
                 let label = if self.recorder.is_recording() {
                     if self.config.transcription_mode == TranscriptionMode::ContinuousDictation {
@@ -700,35 +787,10 @@ impl eframe::App for SpeakTypeCloudApp {
                         "開始錄音"
                     }
                 };
-                if ui
-                    .add_enabled(!self.busy, egui::Button::new(label))
-                    .clicked()
-                {
+                if crate::theme::primary_button_enabled(ui, !self.busy, label).clicked() {
                     self.toggle_recording();
                 }
-                if ui
-                    .add_enabled(
-                        self.busy
-                            && !self
-                                .active_job
-                                .as_ref()
-                                .is_some_and(|active| active.cancelling),
-                        egui::Button::new("取消辨識"),
-                    )
-                    .clicked()
-                {
-                    self.cancel_transcription();
-                }
-                if ui
-                    .add_enabled(
-                        self.realtime_worker.is_some(),
-                        egui::Button::new("取消 Realtime"),
-                    )
-                    .clicked()
-                {
-                    self.cancel_realtime("Realtime session 已由使用者取消");
-                }
-                if ui.button("再次貼上").clicked() && !self.last_text.is_empty() {
+                if crate::theme::secondary_button(ui, "再次貼上").clicked() && !self.last_text.is_empty() {
                     if let Some(target) = self.targets.last_text() {
                         if let Err(injection_error) = inject_text(
                             Some(target),
@@ -756,7 +818,7 @@ impl eframe::App for SpeakTypeCloudApp {
                         }
                     }
                 }
-                if ui.button("複製文字").clicked() {
+                if crate::theme::secondary_button(ui, "複製文字").clicked() {
                     match copy_text(&self.last_text) {
                         Ok(()) => self.status = "已複製到剪貼簿".to_string(),
                         Err(error) => {
@@ -766,247 +828,130 @@ impl eframe::App for SpeakTypeCloudApp {
                     }
                 }
             });
+            ui.horizontal(|ui| {
+                if crate::theme::primary_button_enabled(
+                    ui,
+                    self.busy
+                        && !self
+                            .active_job
+                            .as_ref()
+                            .is_some_and(|active| active.cancelling),
+                    "取消辨識",
+                )
+                .on_disabled_hover_text("目前沒有進行中的辨識工作")
+                .clicked()
+                {
+                    self.cancel_transcription();
+                }
+                if crate::theme::primary_button_enabled(
+                    ui,
+                    self.realtime_worker.is_some(),
+                    "取消 Realtime",
+                )
+                .on_disabled_hover_text("沒有進行中的 Realtime session")
+                .clicked()
+                {
+                    self.cancel_realtime("Realtime session 已由使用者取消");
+                }
+            });
+            crate::theme::card_end(ui);
 
+            // Batch fallback warning
             if self.batch_fallback_audio.is_some() {
+                crate::theme::card_begin(ui, None);
                 ui.colored_label(
-                    egui::Color32::from_rgb(190, 105, 0),
+                    crate::theme::colors::ORANGE_WARNING,
                     "Realtime 失敗後不會自動重傳。此段音訊可能包含已顯示的 partial；請確認後才改用 Batch。",
                 );
-                if ui.button("確認改用 Batch 上傳此段音訊").clicked() {
+                if crate::theme::primary_button(ui, "確認改用 Batch 上傳此段音訊").clicked() {
                     self.confirm_batch_fallback();
                 }
+                crate::theme::card_end(ui);
             }
 
+            // MARK: - Realtime partial
             if !self.partial_text.is_empty() {
-                ui.add_space(6.0);
-                ui.label("Realtime partial 字幕（尚未寫入 history／注入）");
+                crate::theme::card_begin(ui, Some("Realtime partial 字幕（尚未寫入 history／注入）"));
                 ui.add(
                     egui::TextEdit::multiline(&mut self.partial_text)
                         .desired_rows(2)
                         .desired_width(f32::INFINITY)
-                        .interactive(false),
+                        .interactive(false)
+                        .font(egui::TextStyle::Monospace),
                 );
+                crate::theme::card_end(ui);
             }
 
-            ui.add_space(8.0);
-            ui.label("最近辨識文字");
+            // MARK: - Latest transcript
+            crate::theme::card_begin(ui, Some("最近辨識文字"));
             ui.add(
                 egui::TextEdit::multiline(&mut self.last_text)
-                    .desired_rows(5)
-                    .desired_width(f32::INFINITY),
+                    .desired_rows(4)
+                    .desired_width(f32::INFINITY)
+                    .font(egui::TextStyle::Monospace),
             );
-            ui.separator();
+            crate::theme::card_end(ui);
 
-            ui.collapsing("API 與語言", |ui| {
-                egui::ComboBox::from_label("辨識模式")
-                    .selected_text(self.config.transcription_mode.label())
-                    .show_ui(ui, |ui| {
-                        for mode in [
-                            TranscriptionMode::BatchPtt,
-                            TranscriptionMode::RealtimePtt,
-                            TranscriptionMode::ContinuousDictation,
-                        ] {
-                            ui.selectable_value(
-                                &mut self.config.transcription_mode,
-                                mode,
-                                mode.label(),
-                            );
-                        }
-                    });
-                egui::ComboBox::from_label("供應商")
-                    .selected_text(self.config.provider.label())
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.config.provider,
-                            ProviderKind::OpenAi,
-                            "OpenAI",
-                        );
-                        ui.selectable_value(&mut self.config.provider, ProviderKind::Xai, "xAI");
-                        ui.selectable_value(
-                            &mut self.config.provider,
-                            ProviderKind::OpenRouter,
-                            "OpenRouter",
-                        );
-                    });
-                ui.horizontal(|ui| {
-                    ui.label("語言代碼");
-                    ui.text_edit_singleline(&mut self.config.language);
-                });
-                ui.label("提示詞／詞彙背景");
-                ui.text_edit_multiline(&mut self.config.prompt);
-                match self.config.provider {
-                    ProviderKind::OpenAi => {
-                        ui.horizontal(|ui| {
-                            ui.label("模型");
-                            ui.text_edit_singleline(&mut self.config.openai.model);
-                        });
-                        if self.config.transcription_mode.is_realtime() {
-                            ui.horizontal(|ui| {
-                                ui.label("Realtime 模型");
-                                ui.text_edit_singleline(&mut self.config.realtime.openai_model);
-                            });
-                            egui::ComboBox::from_label("Transcription delay")
-                                .selected_text(
-                                    self.config.realtime.openai_transcription_delay.label(),
-                                )
-                                .show_ui(ui, |ui| {
-                                    for delay in [
-                                        OpenAiTranscriptionDelay::Minimal,
-                                        OpenAiTranscriptionDelay::Low,
-                                        OpenAiTranscriptionDelay::Medium,
-                                        OpenAiTranscriptionDelay::High,
-                                        OpenAiTranscriptionDelay::XHigh,
-                                    ] {
-                                        ui.selectable_value(
-                                            &mut self.config.realtime.openai_transcription_delay,
-                                            delay,
-                                            delay.label(),
-                                        );
-                                    }
-                                });
-                            ui.label("OpenAI gpt-realtime-whisper 使用本地 VAD，不啟用 server VAD。");
-                        }
-                    }
-                    ProviderKind::OpenRouter => {
-                        ui.horizontal(|ui| {
-                            ui.label("模型");
-                            ui.text_edit_singleline(&mut self.config.openrouter.model);
-                        });
-                        if self.config.transcription_mode.is_realtime() {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(190, 105, 0),
-                                "OpenRouter 僅支援 Batch / PTT 模式。請切換至 Batch / PTT。",
-                            );
-                        } else {
-                            ui.label("OpenRouter 僅支援 Batch / PTT 模式；選用 Realtime 模式時，設定驗證會拒絕。");
-                        }
-                    }
-                    ProviderKind::Xai => {
-                        ui.checkbox(&mut self.config.xai.format_text, "支援的語言啟用文字格式化");
-                        ui.label("xAI Keyterms（每行一個）");
-                        ui.text_edit_multiline(&mut self.keyterms_edit);
-                        if self.config.transcription_mode.is_realtime() {
-                            ui.checkbox(
-                                &mut self.config.realtime.xai_smart_turn_enabled,
-                                "使用 xAI server Smart Turn（選配）",
-                            );
-                            if self.config.realtime.xai_smart_turn_enabled {
-                                ui.add(
-                                    egui::Slider::new(
-                                        &mut self.config.realtime.xai_smart_turn_threshold,
-                                        0.0..=1.0,
-                                    )
-                                    .text("Smart Turn threshold"),
-                                );
-                                ui.add(
-                                    egui::Slider::new(
-                                        &mut self.config.realtime.xai_smart_turn_timeout_ms,
-                                        1..=5_000,
-                                    )
-                                    .text("Smart Turn timeout (ms)"),
-                                );
-                            }
-                        }
-                    }
-                }
-                ui.checkbox(
-                    &mut self.config.text_processing.normalize_chinese_punctuation,
-                    "正規化中文標點",
-                );
-                if self.config.transcription_mode == TranscriptionMode::ContinuousDictation {
-                    ui.add(
-                        egui::Slider::new(
-                            &mut self.config.realtime.vad_rms_threshold,
-                            0.001..=0.2,
-                        )
-                        .text("本地 VAD RMS threshold"),
+            // MARK: - Recording & Output settings
+            crate::theme::section_header(ui, "錄音與輸出設定");
+            crate::theme::card_begin(ui, None);
+            egui::ComboBox::from_label("麥克風")
+                .selected_text(
+                    self.config
+                        .recording
+                        .input_device_name
+                        .as_deref()
+                        .unwrap_or("系統預設"),
+                )
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.config.recording.input_device_name,
+                        None,
+                        "系統預設",
                     );
-                    ui.add(
-                        egui::Slider::new(
-                            &mut self.config.realtime.vad_silence_ms,
-                            100..=3_000,
-                        )
-                        .text("句尾靜音 (ms)"),
-                    );
-                }
-                egui::ComboBox::from_label("中文輸出")
-                    .selected_text(self.config.text_processing.chinese_variant.label())
-                    .show_ui(ui, |ui| {
-                        for variant in [
-                            ChineseVariant::Preserve,
-                            ChineseVariant::Traditional,
-                            ChineseVariant::Simplified,
-                        ] {
-                            ui.selectable_value(
-                                &mut self.config.text_processing.chinese_variant,
-                                variant,
-                                variant.label(),
-                            );
-                        }
-                    });
-                ui.checkbox(
-                    &mut self.config.text_processing.voice_commands_enabled,
-                    "啟用語音命令（僅完整片語匹配）",
-                );
-            });
-
-            ui.collapsing("錄音與輸出", |ui| {
-                egui::ComboBox::from_label("麥克風")
-                    .selected_text(
-                        self.config
-                            .recording
-                            .input_device_name
-                            .as_deref()
-                            .unwrap_or("系統預設"),
-                    )
-                    .show_ui(ui, |ui| {
+                    for device in &self.devices {
                         ui.selectable_value(
                             &mut self.config.recording.input_device_name,
-                            None,
-                            "系統預設",
+                            Some(device.clone()),
+                            device,
                         );
-                        for device in &self.devices {
-                            ui.selectable_value(
-                                &mut self.config.recording.input_device_name,
-                                Some(device.clone()),
-                                device,
-                            );
-                        }
-                    });
-                ui.add(
-                    egui::Slider::new(&mut self.config.recording.gain, 0.1..=4.0)
-                        .text("麥克風增益"),
-                );
-                ui.add(
-                    egui::Slider::new(
-                        &mut self.config.recording.max_duration_secs,
-                        1..=MAX_RECORDING_DURATION_SECS,
-                    )
-                    .text("Batch／Realtime PTT 錄音上限（秒）"),
-                );
-                ui.horizontal(|ui| {
-                    ui.label("全域快捷鍵");
-                    ui.text_edit_singleline(&mut self.hotkey_edit);
+                    }
                 });
-                ui.checkbox(&mut self.config.hold_to_record, "按住錄音、放開送出（PTT）");
-                ui.checkbox(&mut self.config.launch_at_login, "Windows 登入時自動啟動");
-                ui.checkbox(&mut self.config.output.auto_inject, "自動輸入原本焦點視窗");
-                ui.checkbox(
-                    &mut self.config.output.restore_clipboard,
-                    "貼上後還原文字剪貼簿",
-                );
-                ui.checkbox(
-                    &mut self.config.output.preserve_target_window,
-                    "錄音開始時記住目標視窗",
-                );
-                ui.checkbox(
-                    &mut self.config.save_recordings,
-                    "保留 WAV 錄音（預設關閉）",
-                );
+            ui.add(
+                egui::Slider::new(&mut self.config.recording.gain, 0.1..=4.0)
+                    .text("麥克風增益"),
+            );
+            ui.add(
+                egui::Slider::new(
+                    &mut self.config.recording.max_duration_secs,
+                    1..=MAX_RECORDING_DURATION_SECS,
+                )
+                .text("Batch／Realtime PTT 錄音上限（秒）"),
+            );
+            ui.horizontal(|ui| {
+                ui.label("全域快捷鍵");
+                ui.text_edit_singleline(&mut self.hotkey_edit);
             });
+            ui.checkbox(&mut self.config.hold_to_record, "按住錄音、放開送出（PTT）");
+            ui.checkbox(&mut self.config.launch_at_login, "Windows 登入時自動啟動");
+            ui.checkbox(&mut self.config.output.auto_inject, "自動輸入原本焦點視窗");
+            ui.checkbox(
+                &mut self.config.output.restore_clipboard,
+                "貼上後還原文字剪貼簿",
+            );
+            ui.checkbox(
+                &mut self.config.output.preserve_target_window,
+                "錄音開始時記住目標視窗",
+            );
+            ui.checkbox(
+                &mut self.config.save_recordings,
+                "保留 WAV 錄音（預設關閉）",
+            );
+            crate::theme::card_end(ui);
 
-            ui.add_space(8.0);
-            if crate::theme::settings_button(ui, "儲存設定").clicked() {
+            // MARK: - Save button
+            ui.add_space(12.0);
+            if crate::theme::primary_button(ui, "儲存設定").clicked() {
                 self.save_settings();
             }
         });
@@ -1015,7 +960,23 @@ impl eframe::App for SpeakTypeCloudApp {
         {
             self.cancel_realtime("Realtime session 已因 provider／模式／設定變更而停止");
         }
-        ctx.request_repaint_after(Duration::from_millis(35));
+        // Smart repaint scheduling — only repaint when state requires it:
+        // - Recording active: poll at 8 Hz for timer/duration display
+        // - Realtime session active: poll at 28 Hz for partial subtitles
+        // - Batch transcription busy: poll at 8 Hz for completion
+        // - Otherwise: poll at 4 Hz for tray/hotkey events (idle mode)
+        let repaint_interval = if self.recorder.is_recording() {
+            if self.config.transcription_mode.is_realtime() {
+                Duration::from_millis(35) // ~28 Hz for realtime partial updates
+            } else {
+                Duration::from_millis(125) // ~8 Hz for timer/recording limit
+            }
+        } else if self.busy || self.realtime_worker.is_some() {
+            Duration::from_millis(125) // ~8 Hz, waiting for completion
+        } else {
+            Duration::from_millis(250) // ~4 Hz idle — tray/hotkey polling only
+        };
+        ctx.request_repaint_after(repaint_interval);
     }
 }
 
@@ -1064,13 +1025,15 @@ fn should_stop_for_recording_limit(
 
 fn realtime_settings_fingerprint(config: &AppConfig) -> String {
     format!(
-        "{:?}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "{:?}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         config.provider,
         config.transcription_mode,
         config.language,
         config.openai.api_key_env,
         config.xai.api_key_env,
         config.openrouter.api_key_env,
+        config.openai.model,
+        config.openrouter.model,
         config.realtime.openai_model,
         config.realtime.openai_transcription_delay.as_api_str(),
         config.realtime.xai_smart_turn_enabled,

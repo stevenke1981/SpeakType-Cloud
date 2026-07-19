@@ -1,6 +1,9 @@
+mod models;
 mod openai;
 mod openrouter;
 mod xai;
+
+pub use models::fetch_available_models;
 
 use crate::config::{AppConfig, ProviderKind};
 use crate::error::{AppError, AppResult};
@@ -160,8 +163,11 @@ pub(super) mod test_support {
             name.eq_ignore_ascii_case("content-length")
                 .then(|| value.trim().parse::<usize>().ok())
                 .flatten()
-        })?;
-        Some(header_end + content_length)
+        });
+        // For GET/HEAD/DELETE (no Content-Length), the request ends at the
+        // end of headers.  For POST/PUT/PATCH with Content-Length, the body
+        // follows the headers.
+        Some(header_end + content_length.unwrap_or(0))
     }
 
     #[test]

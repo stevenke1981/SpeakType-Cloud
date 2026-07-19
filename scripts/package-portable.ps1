@@ -18,6 +18,7 @@ try {
     & "$PSScriptRoot\build-release.ps1"
     New-Item -ItemType Directory -Force -Path "$stage\docs" | Out-Null
     Copy-Item "$root\dist\release\SpeakTypeCloud.exe" "$stage\SpeakTypeCloud.exe"
+    Copy-Item "$root\dist\release\SpeakTypeCloud.pdb" "$stage\SpeakTypeCloud.pdb"
     Copy-Item "$root\README.md","$root\SECURITY.md","$root\API_PROVIDERS.md" "$stage\docs"
     @"
 1. Run SpeakTypeCloud.exe.

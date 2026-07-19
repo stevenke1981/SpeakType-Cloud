@@ -18,6 +18,7 @@ egui = "0.27"
 cpal = "0.15"
 crossbeam-queue = "0.3"
 rdev = "0.5"
+device_query = "2.0"
 enigo = "0.1"
 arboard = "3.6"
 hound = "3.5"
@@ -53,5 +54,7 @@ tray-icon = { version = "0.24", default-features = false }
 [profile.release]
 lto = "thin"
 codegen-units = 1
-strip = "symbols"
+# Keep PDB on Windows for crash debugging / minidump analysis.
+# The binary is still stripped; debug info lives in the separate .pdb file.
+debug = 1
 panic = "abort"
