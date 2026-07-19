@@ -5,6 +5,21 @@ edition = "2021"
 description = "Windows-first cloud speech-to-text input method using OpenAI, xAI, or OpenRouter APIs"
 license = "MIT"
 
+[features]
+default = ["egui-ui"]
+egui-ui = []
+gpui-ui = ["dep:acme-ui", "dep:gpui", "dep:gpui_platform"]
+
+[[bin]]
+name = "speaktype-cloud"
+path = "src/main.rs"
+required-features = ["egui-ui"]
+
+[[bin]]
+name = "speaktype-cloud-acme"
+path = "src/bin/speaktype_cloud_acme.rs"
+required-features = ["gpui-ui"]
+
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 
@@ -38,6 +53,9 @@ thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 zhhz = "0.8.2"
+acme-ui = { git = "https://github.com/stevenke1981/AcmeUIKit.git", rev = "028f34c73323e369d003777008f124481565c2e1", package = "acme-ui", optional = true }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba", optional = true }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba", features = ["font-kit", "x11", "wayland", "runtime_shaders"], optional = true }
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Security_Credentials",
