@@ -248,9 +248,21 @@ impl Default for RecordingConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OutputBufferMode {
+    /// 始終複製到系統剪貼簿（目前行為）
+    #[default]
+    Clipboard,
+    /// 文字保留在 App 內部暫存區，不污染剪貼簿；自動注入時暫時使用剪貼簿再還原
+    Temporary,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OutputConfig {
+    /// 轉錄文字儲存模式：剪貼簿或 App 暫存區
+    pub buffer_mode: OutputBufferMode,
     pub auto_inject: bool,
     pub restore_clipboard: bool,
     pub preserve_target_window: bool,
@@ -261,6 +273,7 @@ pub struct OutputConfig {
 impl Default for OutputConfig {
     fn default() -> Self {
         Self {
+            buffer_mode: OutputBufferMode::default(),
             auto_inject: true,
             restore_clipboard: true,
             preserve_target_window: true,

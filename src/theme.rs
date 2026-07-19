@@ -229,44 +229,6 @@ pub fn status_badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
 // ---------------------------------------------------------------------------
 // Section card helper — renders a visual card container for grouped UI.
 
-/// Begin a card section with an optional title.
-/// Returns an egui::Ui::Id reference for adding child widgets.
-/// Call `card_end(ui)` after adding children.
-pub fn card_begin(ui: &mut egui::Ui, title: Option<&str>) {
-    card_begin_with_desc(ui, title, None)
-}
-
-/// Begin a card section with an optional title **and** description subtitle
-/// (AcmeUIKit Card pattern). The description appears in smaller secondary text
-/// below the title.
-pub fn card_begin_with_desc(ui: &mut egui::Ui, title: Option<&str>, description: Option<&str>) {
-    let available = ui.available_width();
-    egui::Frame::none()
-        .fill(colors::BG_CARD)
-        .rounding(egui::Rounding::same(12.0))
-        .stroke(egui::Stroke::new(1.0, colors::SEPARATOR))
-        .inner_margin(egui::Margin::symmetric(16.0, 14.0))
-        .show(ui, |ui| {
-            ui.set_max_width(available);
-            if let Some(title) = title {
-                ui.label(
-                    egui::RichText::new(title)
-                        .size(14.0)
-                        .color(colors::TEXT_PRIMARY)
-                        .strong(),
-                );
-                if let Some(desc) = description {
-                    ui.label(
-                        egui::RichText::new(desc)
-                            .size(12.0)
-                            .color(colors::TEXT_SECONDARY),
-                    );
-                }
-                ui.add_space(8.0);
-            }
-        });
-}
-
 /// Render a complete AcmeUIKit-style card. New layouts should prefer this
 /// closure-based helper so the heading and body share one background, border,
 /// padding, and clipping region.
@@ -302,11 +264,6 @@ pub fn card<R>(
             }
             body(ui)
         })
-}
-
-/// End the card section (just adds closing space).
-pub fn card_end(ui: &mut egui::Ui) {
-    ui.add_space(2.0);
 }
 
 /// Section header with a subtle divider.
@@ -477,8 +434,6 @@ mod tests {
         let _: fn(&mut egui::Ui, &str) -> egui::Response = ghost_button;
         let _: fn(&mut egui::Ui, &str) -> egui::Response = small_ghost_button;
         let _: fn(&mut egui::Ui, bool, &str) -> egui::Response = mode_pill;
-        let _: fn(&mut egui::Ui, Option<&str>) = card_begin;
-        let _: fn(&mut egui::Ui, Option<&str>, Option<&str>) = card_begin_with_desc;
     }
 
     #[test]

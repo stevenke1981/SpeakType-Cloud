@@ -29,6 +29,19 @@ static SAVED_RECT: Mutex<Option<(i32, i32, i32, i32)>> = Mutex::new(None);
 /// Cached provider selection for clearing stale model fetch errors.
 static PROVIDER_CACHE: Mutex<Option<crate::config::ProviderKind>> = Mutex::new(None);
 
+const SETTINGS_WINDOW_MAX_SIZE: egui::Vec2 = egui::vec2(640.0, 440.0);
+const SETTINGS_WINDOW_MIN_SIZE: egui::Vec2 = egui::vec2(600.0, 400.0);
+const SETTINGS_WINDOW_MARGIN: f32 = 48.0;
+
+fn settings_window_size(screen_size: egui::Vec2) -> egui::Vec2 {
+    egui::vec2(
+        (screen_size.x - SETTINGS_WINDOW_MARGIN)
+            .clamp(SETTINGS_WINDOW_MIN_SIZE.x, SETTINGS_WINDOW_MAX_SIZE.x),
+        (screen_size.y - SETTINGS_WINDOW_MARGIN)
+            .clamp(SETTINGS_WINDOW_MIN_SIZE.y, SETTINGS_WINDOW_MAX_SIZE.y),
+    )
+}
+
 /// Resolve the real application window on every lifecycle operation.
 ///
 /// The eframe/winit process also owns transient renderer/helper windows. A
@@ -792,68 +805,90 @@ impl AppleShell {
         let mut key_action = None;
         let mut config_save = false;
         let mut open = self.settings_window_open;
+        let mut close_settings = false;
+        let settings_size = settings_window_size(ctx.screen_rect().size());
+        let settings_rect = egui::Rect::from_center_size(ctx.screen_rect().center(), settings_size);
 
         egui::Window::new("設定")
             .id(egui::Id::new("settings-window"))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .collapsible(false)
-            .resizable(false)
-            .default_width(720.0)
+            .fixed_rect(settings_rect)
             .open(&mut open)
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(720.0)
-                    .show(ui, |ui| {
+                ui.set_max_width((settings_size.x - 80.0).max(520.0));
+                ui.style_mut().wrap = Some(true);
                 ui.label(
-                    egui::RichText::new("API 與辨識設定")
+                    egui::RichText::new("SpeakType Cloud 設定")
                         .size(20.0)
                         .color(crate::theme::colors::TEXT_PRIMARY)
                         .strong(),
                 );
-                ui.add_space(4.0);
+                crate::theme::caption(ui, "調整辨識、錄音、輸出與 API Key；變更完成後請儲存設定。");
                 ui.separator();
-                ui.add_space(8.0);
-
-                egui::ComboBox::from_label("辨識模式")
-                    .selected_text(self.app.config.transcription_mode.label())
-                    .show_ui(ui, |ui| {
-                        for mode in [
-                            crate::config::TranscriptionMode::BatchPtt,
-                            crate::config::TranscriptionMode::RealtimePtt,
-                            crate::config::TranscriptionMode::ContinuousDictation,
-                        ] {
-                            ui.selectable_value(
-                                &mut self.app.config.transcription_mode,
-                                mode,
-                                mode.label(),
-                            );
-                        }
-                    });
-                egui::ComboBox::from_label("供應商")
-                    .selected_text(self.app.config.provider.label())
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.app.config.provider,
-                            crate::config::ProviderKind::OpenAi,
-                            "OpenAI",
-                        );
-                        ui.selectable_value(
-                            &mut self.app.config.provider,
-                            crate::config::ProviderKind::Xai,
-                            "xAI",
-                        );
-                        ui.selectable_value(
-                            &mut self.app.config.provider,
-                            crate::config::ProviderKind::OpenRouter,
-                            "OpenRouter",
-                        );
-                    });
+                egui::ScrollArea::vertical()
+                    .id_source("settings-content-scroll")
+                    .auto_shrink([false; 2])
+                    .max_height((settings_size.y - 250.0).max(180.0))
+                    .show(ui, |ui| {
+                crate::theme::card(
+                    ui,
+                    Some("辨識與模型"),
+                    Some("選擇工作模式、供應商、模型與輸出文字處理方式。"),
+                    |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("語言代碼");
-                    ui.text_edit_singleline(&mut self.app.config.language);
+                    ui.allocate_ui(egui::vec2(180.0, 80.0), |ui| {
+                        ui.label("辨識模式");
+                        egui::ComboBox::from_id_source("settings-transcription-mode")
+                            .selected_text(self.app.config.transcription_mode.label())
+                            .show_ui(ui, |ui| {
+                                for mode in [
+                                    crate::config::TranscriptionMode::BatchPtt,
+                                    crate::config::TranscriptionMode::RealtimePtt,
+                                    crate::config::TranscriptionMode::ContinuousDictation,
+                                ] {
+                                    ui.selectable_value(
+                                        &mut self.app.config.transcription_mode,
+                                        mode,
+                                        mode.label(),
+                                    );
+                                }
+                            });
+                    });
+                    ui.allocate_ui(egui::vec2(180.0, 80.0), |ui| {
+                        ui.label("供應商");
+                        egui::ComboBox::from_id_source("settings-provider")
+                            .selected_text(self.app.config.provider.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.app.config.provider,
+                                    crate::config::ProviderKind::OpenAi,
+                                    "OpenAI",
+                                );
+                                ui.selectable_value(
+                                    &mut self.app.config.provider,
+                                    crate::config::ProviderKind::Xai,
+                                    "xAI",
+                                );
+                                ui.selectable_value(
+                                    &mut self.app.config.provider,
+                                    crate::config::ProviderKind::OpenRouter,
+                                    "OpenRouter",
+                                );
+                            });
+                    });
                 });
+                ui.label("語言代碼");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.app.config.language)
+                        .hint_text("例如：zh、en")
+                        .desired_width(f32::INFINITY),
+                );
                 ui.label("提示詞／詞彙背景");
-                ui.text_edit_multiline(&mut self.app.config.prompt);
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.app.config.prompt)
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY),
+                );
 
                 // Provider-specific settings
                 match self.app.config.provider {
@@ -1024,10 +1059,16 @@ impl AppleShell {
                     &mut self.app.config.text_processing.voice_commands_enabled,
                     "啟用語音命令（僅完整片語匹配）",
                 );
+                });
+                ui.add_space(12.0);
 
-                crate::theme::section_header(ui, "錄音設定");
-                crate::theme::card_begin(ui, None);
-                egui::ComboBox::from_label("麥克風")
+                crate::theme::card(
+                    ui,
+                    Some("錄音與輸出"),
+                    Some("設定麥克風、快捷鍵、文字保存方式與焦點視窗注入。"),
+                    |ui| {
+                ui.label("麥克風");
+                egui::ComboBox::from_id_source("settings-microphone")
                     .selected_text(
                         self.app
                             .config
@@ -1076,6 +1117,19 @@ impl AppleShell {
                     &mut self.app.config.launch_at_login,
                     "Windows 登入時自動啟動",
                 );
+                ui.horizontal(|ui| {
+                    ui.label("轉錄文字儲存方式");
+                    ui.selectable_value(
+                        &mut self.app.config.output.buffer_mode,
+                        crate::config::OutputBufferMode::Clipboard,
+                        "系統剪貼簿",
+                    );
+                    ui.selectable_value(
+                        &mut self.app.config.output.buffer_mode,
+                        crate::config::OutputBufferMode::Temporary,
+                        "App 暫存區",
+                    );
+                });
                 ui.checkbox(
                     &mut self.app.config.output.auto_inject,
                     "自動輸入原本焦點視窗",
@@ -1096,9 +1150,10 @@ impl AppleShell {
                     ui.label("全域快捷鍵");
                     ui.text_edit_singleline(&mut self.app.hotkey_edit);
                 });
-                crate::theme::card_end(ui);
+                });
+                ui.add_space(12.0);
 
-                crate::theme::section_header(ui, "API 金鑰");
+                crate::theme::section_header(ui, "API Key");
                 ui.label(
                     egui::RichText::new(
                         "金鑰會儲存在 Windows Credential Manager，不會寫入 config.toml；舊版使用者環境變數會在啟動時安全遷移。",
@@ -1109,7 +1164,7 @@ impl AppleShell {
                 ui.add_space(10.0);
 
                 // OpenAI card
-                crate::theme::card_begin(ui, None);
+                crate::theme::card(ui, None, None, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("OpenAI").size(14.0).color(crate::theme::colors::TEXT_PRIMARY).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1136,11 +1191,11 @@ impl AppleShell {
                         self.confirm_clear_key = Some(ProviderKey::OpenAi);
                     }
                 });
-                crate::theme::card_end(ui);
+                });
 
                 ui.add_space(8.0);
                 // xAI card
-                crate::theme::card_begin(ui, None);
+                crate::theme::card(ui, None, None, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("xAI").size(14.0).color(crate::theme::colors::TEXT_PRIMARY).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1167,11 +1222,11 @@ impl AppleShell {
                         self.confirm_clear_key = Some(ProviderKey::Xai);
                     }
                 });
-                crate::theme::card_end(ui);
+                });
 
                 ui.add_space(8.0);
                 // OpenRouter card
-                crate::theme::card_begin(ui, None);
+                crate::theme::card(ui, None, None, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("OpenRouter").size(14.0).color(crate::theme::colors::TEXT_PRIMARY).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1198,7 +1253,7 @@ impl AppleShell {
                         self.confirm_clear_key = Some(ProviderKey::OpenRouter);
                     }
                 });
-                crate::theme::card_end(ui);
+                });
 
                 ui.add_space(10.0);
                 ui.checkbox(&mut self.show_api_keys, "顯示輸入中的 API Key");
@@ -1283,12 +1338,22 @@ impl AppleShell {
                     });
                 }
 
-                ui.add_space(16.0);
-                if crate::theme::primary_button(ui, "儲存設定").clicked() {
-                    config_save = true;
-                }
                 }); // ScrollArea
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if crate::theme::primary_button(ui, "儲存全部設定").clicked() {
+                        config_save = true;
+                    }
+                    if crate::theme::secondary_button(ui, "關閉設定").clicked() {
+                        close_settings = true;
+                    }
+                    crate::theme::caption(ui, "API Key 可分別儲存，不會寫入 config.toml。");
+                });
             });
+
+        if close_settings {
+            open = false;
+        }
 
         self.settings_window_open = open;
         if let Some(action) = key_action {
@@ -1803,6 +1868,16 @@ mod tests {
     #[test]
     fn window_close_hides_when_tray_is_available() {
         assert_eq!(close_decision(true, false), CloseDecision::Hide);
+    }
+
+    #[test]
+    fn settings_window_stays_inside_main_viewport() {
+        let default = settings_window_size(egui::vec2(980.0, 720.0));
+        assert_eq!(default, egui::vec2(640.0, 440.0));
+
+        let minimum = settings_window_size(egui::vec2(800.0, 600.0));
+        assert_eq!(minimum, egui::vec2(640.0, 440.0));
+        assert!(minimum.x < 800.0 && minimum.y < 600.0);
     }
 
     #[test]

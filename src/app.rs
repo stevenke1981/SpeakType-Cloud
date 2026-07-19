@@ -1,5 +1,5 @@
 use crate::audio::{LiveAudioStats, RecordedAudio, Recorder};
-use crate::config::{AppConfig, ProviderKind, TranscriptionMode};
+use crate::config::{AppConfig, OutputBufferMode, ProviderKind, TranscriptionMode};
 use crate::error::{AppError, AppResult};
 use crate::history::{self, HistoryEntry};
 use crate::hotkey::{GlobalHotkey, HotkeyEvent};
@@ -210,7 +210,14 @@ impl SpeakTypeCloudApp {
             Ok(()) => {
                 self.recording_started = Some(Instant::now());
                 self.status = if self.config.output.auto_inject && target.is_none() {
-                    "錄音中…未找到外部目標，完成後只會複製文字".to_string()
+                    match self.config.output.buffer_mode {
+                        OutputBufferMode::Temporary => {
+                            "錄音中…未找到外部目標，完成後文字保留在 App 暫存區".to_string()
+                        }
+                        OutputBufferMode::Clipboard => {
+                            "錄音中…未找到外部目標，完成後只會複製文字".to_string()
+                        }
+                    }
                 } else {
                     "錄音中…放開快捷鍵即可辨識".to_string()
                 };
@@ -576,38 +583,86 @@ impl SpeakTypeCloudApp {
             record_nonfatal_error(&mut self.last_error, &format!("歷史紀錄未保存：{error}"));
         }
 
-        if self.config.output.auto_inject && delivery == DeliveryMode::Normal {
-            if let Some(target) = target {
-                if let Err(injection_error) =
-                    inject_text(Some(target), &text, self.config.output.restore_clipboard)
-                {
-                    if self.config.output.copy_only_on_injection_failure {
-                        let feedback =
-                            fallback_delivery_feedback(injection_error, copy_text(&text));
-                        self.status = feedback.status.to_string();
-                        record_nonfatal_error(&mut self.last_error, &feedback.error);
+        match self.config.output.buffer_mode {
+            OutputBufferMode::Temporary => {
+                // App 暫存區模式：不污染系統剪貼簿
+                if self.config.output.auto_inject && delivery == DeliveryMode::Normal {
+                    if let Some(target) = target {
+                        if let Err(injection_error) =
+                            inject_text(Some(target), &text, self.config.output.restore_clipboard)
+                        {
+                            if self.config.output.copy_only_on_injection_failure {
+                                let feedback =
+                                    fallback_delivery_feedback(injection_error, copy_text(&text));
+                                self.status = feedback.status.to_string();
+                                record_nonfatal_error(&mut self.last_error, &feedback.error);
+                            } else {
+                                self.status = "自動貼上失敗，文字保留在 App 暫存區".to_string();
+                                record_nonfatal_error(
+                                    &mut self.last_error,
+                                    &injection_error.to_string(),
+                                );
+                            }
+                        } else {
+                            self.status = "已輸入錄音開始前的外部視窗".to_string();
+                        }
                     } else {
-                        self.status = "自動貼上失敗，文字保留在最近辨識文字區".to_string();
-                        record_nonfatal_error(&mut self.last_error, &injection_error.to_string());
+                        // Temporary mode + no target = keep in last_text only
+                        self.status = "沒有外部目標，文字保留在 App 暫存區".to_string();
+                    }
+                } else if delivery == DeliveryMode::CopyOnly {
+                    // CopyOnly 命令在 Temporary 模式下仍需複製
+                    if let Err(error) = copy_text(&text) {
+                        self.status = "複製失敗，文字保留在 App 暫存區".to_string();
+                        record_nonfatal_error(&mut self.last_error, &error.to_string());
+                    } else {
+                        self.status = "語音命令已執行：文字已複製到剪貼簿".to_string();
                     }
                 } else {
-                    self.status = "已輸入錄音開始前的外部視窗".to_string();
+                    // 純暫存 — 不碰剪貼簿
+                    self.status = "文字保留在 App 暫存區".to_string();
                 }
-            } else if let Err(error) = copy_text(&text) {
-                self.status = "沒有外部目標且複製失敗，文字保留在最近辨識文字區".to_string();
-                record_nonfatal_error(&mut self.last_error, &error.to_string());
-            } else {
-                self.status = "未找到外部目標，文字已複製到剪貼簿".to_string();
             }
-        } else if let Err(error) = copy_text(&text) {
-            self.status = "複製失敗，文字保留在最近辨識文字區".to_string();
-            record_nonfatal_error(&mut self.last_error, &error.to_string());
-        } else {
-            self.status = if delivery == DeliveryMode::CopyOnly {
-                "語音命令已執行：文字已複製到剪貼簿".to_string()
-            } else {
-                "已複製到剪貼簿".to_string()
-            };
+            OutputBufferMode::Clipboard => {
+                // 剪貼簿模式：始終複製到系統剪貼簿（保留原行為）
+                if self.config.output.auto_inject && delivery == DeliveryMode::Normal {
+                    if let Some(target) = target {
+                        if let Err(injection_error) =
+                            inject_text(Some(target), &text, self.config.output.restore_clipboard)
+                        {
+                            if self.config.output.copy_only_on_injection_failure {
+                                let feedback =
+                                    fallback_delivery_feedback(injection_error, copy_text(&text));
+                                self.status = feedback.status.to_string();
+                                record_nonfatal_error(&mut self.last_error, &feedback.error);
+                            } else {
+                                self.status = "自動貼上失敗，文字保留在最近辨識文字區".to_string();
+                                record_nonfatal_error(
+                                    &mut self.last_error,
+                                    &injection_error.to_string(),
+                                );
+                            }
+                        } else {
+                            self.status = "已輸入錄音開始前的外部視窗".to_string();
+                        }
+                    } else if let Err(error) = copy_text(&text) {
+                        self.status =
+                            "沒有外部目標且複製失敗，文字保留在最近辨識文字區".to_string();
+                        record_nonfatal_error(&mut self.last_error, &error.to_string());
+                    } else {
+                        self.status = "未找到外部目標，文字已複製到剪貼簿".to_string();
+                    }
+                } else if let Err(error) = copy_text(&text) {
+                    self.status = "複製失敗，文字保留在最近辨識文字區".to_string();
+                    record_nonfatal_error(&mut self.last_error, &error.to_string());
+                } else {
+                    self.status = if delivery == DeliveryMode::CopyOnly {
+                        "語音命令已執行：文字已複製到剪貼簿".to_string()
+                    } else {
+                        "已複製到剪貼簿".to_string()
+                    };
+                }
+            }
         }
     }
 
