@@ -24,3 +24,5 @@
 {"at":"2026-07-19T10:20:00.156Z","event":"session.created","sessionID":"ses_0861c32f4ffeu82Aq5rZjOStmz"}
 {"at":"2026-07-19T10:23:35.203Z","event":"tool.execute.after","tool":"memory_add","status":"ok"}
 {"at":"2026-07-19T10:47:14.406Z","event":"tool.execute.after","tool":"memory_add","status":"ok"}
+{"at":"2026-07-19T10:55:25.090Z","event":"session.compacted","sessionID":"ses_086b5109effeszs21MhH1aBnj0","reminder":"preserve durable facts with memory_add"}
+{"at":"2026-07-19T11:16:26.311Z","event":"session.created","sessionID":"ses_085e887c9ffegKyK7M94l1G7bO"}

@@ -1,5 +1,11 @@
 use eframe::egui;
 
+/// Main-window geometry keeps the workspace comfortable on a 1366x768 display
+/// while still leaving enough width for the three transcription-mode controls.
+pub const DEFAULT_WINDOW_SIZE: [f32; 2] = [980.0, 720.0];
+pub const MIN_WINDOW_SIZE: [f32; 2] = [800.0, 600.0];
+pub const MAIN_TOOLBAR_HEIGHT: f32 = 104.0;
+
 /// Apple-inspired design tokens
 pub mod colors {
     use eframe::egui::Color32;
@@ -41,11 +47,7 @@ pub fn install(ctx: &egui::Context) {
     // Proportional font is the system default (Segoe UI on Windows, SF on macOS).
     style.text_styles.insert(
         egui::TextStyle::Heading,
-        egui::FontId::new(22.0, egui::FontFamily::Proportional),
-    );
-    style.text_styles.insert(
-        egui::TextStyle::Name("Title".into()),
-        egui::FontId::new(17.0, egui::FontFamily::Proportional),
+        egui::FontId::new(20.0, egui::FontFamily::Proportional),
     );
     style.text_styles.insert(
         egui::TextStyle::Body,
@@ -231,6 +233,13 @@ pub fn status_badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
 /// Returns an egui::Ui::Id reference for adding child widgets.
 /// Call `card_end(ui)` after adding children.
 pub fn card_begin(ui: &mut egui::Ui, title: Option<&str>) {
+    card_begin_with_desc(ui, title, None)
+}
+
+/// Begin a card section with an optional title **and** description subtitle
+/// (AcmeUIKit Card pattern). The description appears in smaller secondary text
+/// below the title.
+pub fn card_begin_with_desc(ui: &mut egui::Ui, title: Option<&str>, description: Option<&str>) {
     let available = ui.available_width();
     egui::Frame::none()
         .fill(colors::BG_CARD)
@@ -242,13 +251,57 @@ pub fn card_begin(ui: &mut egui::Ui, title: Option<&str>) {
             if let Some(title) = title {
                 ui.label(
                     egui::RichText::new(title)
-                        .size(15.0)
+                        .size(14.0)
                         .color(colors::TEXT_PRIMARY)
                         .strong(),
                 );
+                if let Some(desc) = description {
+                    ui.label(
+                        egui::RichText::new(desc)
+                            .size(12.0)
+                            .color(colors::TEXT_SECONDARY),
+                    );
+                }
                 ui.add_space(8.0);
             }
         });
+}
+
+/// Render a complete AcmeUIKit-style card. New layouts should prefer this
+/// closure-based helper so the heading and body share one background, border,
+/// padding, and clipping region.
+pub fn card<R>(
+    ui: &mut egui::Ui,
+    title: Option<&str>,
+    description: Option<&str>,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    let available = ui.available_width();
+    egui::Frame::none()
+        .fill(colors::BG_CARD)
+        .rounding(egui::Rounding::same(12.0))
+        .stroke(egui::Stroke::new(1.0, colors::SEPARATOR))
+        .inner_margin(egui::Margin::symmetric(16.0, 14.0))
+        .show(ui, |ui| {
+            ui.set_min_width((available - 32.0).max(0.0));
+            if let Some(title) = title {
+                ui.label(
+                    egui::RichText::new(title)
+                        .size(14.0)
+                        .color(colors::TEXT_PRIMARY)
+                        .strong(),
+                );
+                if let Some(description) = description {
+                    ui.label(
+                        egui::RichText::new(description)
+                            .size(12.0)
+                            .color(colors::TEXT_SECONDARY),
+                    );
+                }
+                ui.add_space(8.0);
+            }
+            body(ui)
+        })
 }
 
 /// End the card section (just adds closing space).
@@ -261,7 +314,7 @@ pub fn section_header(ui: &mut egui::Ui, text: &str) {
     ui.add_space(16.0);
     ui.label(
         egui::RichText::new(text)
-            .size(17.0)
+            .size(14.0)
             .color(colors::TEXT_PRIMARY)
             .strong(),
     );
@@ -276,6 +329,70 @@ pub fn caption(ui: &mut egui::Ui, text: &str) {
         egui::RichText::new(text)
             .size(12.0)
             .color(colors::TEXT_SECONDARY),
+    );
+}
+
+/// A ghost button — no border, no fill, just text.
+/// Use for secondary inline actions (copy, re-paste inside cards).
+pub fn ghost_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(label)
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::NONE)
+            .rounding(egui::Rounding::same(6.0)),
+    )
+}
+
+/// A compact ghost button for inline toolbar use.
+#[allow(dead_code)]
+pub fn small_ghost_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    let font_id = egui::FontId::proportional(12.0);
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).font(font_id))
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::NONE)
+            .rounding(egui::Rounding::same(6.0)),
+    )
+}
+
+/// A single pill-style mode tab. Renders as a rounded-rect button.
+/// `selected` controls the visual state (filled / outline).
+/// Returns the `Response` so the caller can check `.clicked()`.
+pub fn mode_pill(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::Response {
+    let fill = if selected {
+        colors::ACCENT_BLUE
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    let stroke = if selected {
+        egui::Stroke::new(1.0, colors::ACCENT_BLUE)
+    } else {
+        egui::Stroke::new(1.0, colors::BORDER)
+    };
+    let text_color = if selected {
+        egui::Color32::WHITE
+    } else {
+        colors::TEXT_SECONDARY
+    };
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).color(text_color).size(12.0))
+            .fill(fill)
+            .stroke(stroke)
+            .rounding(egui::Rounding::same(14.0))
+            .min_size(egui::vec2(64.0, 0.0)),
+    )
+}
+
+/// Vertical separator for toolbar-style horizontal layouts.
+#[allow(dead_code)]
+pub fn toolbar_separator(ui: &mut egui::Ui) {
+    let height = 20.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, height), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.vline(
+        rect.center().x,
+        rect.top()..=rect.bottom(),
+        egui::Stroke::new(1.0, colors::SEPARATOR),
     );
 }
 
@@ -353,6 +470,26 @@ mod tests {
         let _: fn(&mut egui::Ui, bool, &str) -> egui::Response = primary_button_enabled;
         let _: fn(&mut egui::Ui, &str) -> egui::Response = secondary_button;
         let _: fn(&mut egui::Ui, &str) -> egui::Response = destructive_button;
+    }
+
+    #[test]
+    fn new_helpers_compile() {
+        let _: fn(&mut egui::Ui, &str) -> egui::Response = ghost_button;
+        let _: fn(&mut egui::Ui, &str) -> egui::Response = small_ghost_button;
+        let _: fn(&mut egui::Ui, bool, &str) -> egui::Response = mode_pill;
+        let _: fn(&mut egui::Ui, Option<&str>) = card_begin;
+        let _: fn(&mut egui::Ui, Option<&str>, Option<&str>) = card_begin_with_desc;
+    }
+
+    #[test]
+    fn main_window_geometry_leaves_room_for_content() {
+        let default_size = std::hint::black_box(DEFAULT_WINDOW_SIZE);
+        let min_size = std::hint::black_box(MIN_WINDOW_SIZE);
+        let toolbar_height = std::hint::black_box(MAIN_TOOLBAR_HEIGHT);
+        assert!(default_size[0] >= min_size[0]);
+        assert!(default_size[1] >= min_size[1]);
+        assert!(min_size[0] >= 800.0);
+        assert!(min_size[1] - toolbar_height >= 480.0);
     }
 
     #[test]

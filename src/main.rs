@@ -27,8 +27,8 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("SpeakType Cloud")
-            .with_inner_size([860.0, 760.0])
-            .with_min_inner_size([760.0, 640.0]),
+            .with_inner_size(theme::DEFAULT_WINDOW_SIZE)
+            .with_min_inner_size(theme::MIN_WINDOW_SIZE),
         ..Default::default()
     };
 

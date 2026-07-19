@@ -1,5 +1,5 @@
 use crate::audio::{LiveAudioStats, RecordedAudio, Recorder};
-use crate::config::{AppConfig, ProviderKind, TranscriptionMode, MAX_RECORDING_DURATION_SECS};
+use crate::config::{AppConfig, ProviderKind, TranscriptionMode};
 use crate::error::{AppError, AppResult};
 use crate::history::{self, HistoryEntry};
 use crate::hotkey::{GlobalHotkey, HotkeyEvent};
@@ -20,7 +20,7 @@ pub struct SpeakTypeCloudApp {
     recorder: Recorder,
     hotkey: Option<GlobalHotkey>,
     hotkey_error: Option<String>,
-    devices: Vec<String>,
+    pub devices: Vec<String>,
     recording_started: Option<Instant>,
     targets: TargetState,
     transcription_rx: Option<Receiver<JobMessage>>,
@@ -38,7 +38,7 @@ pub struct SpeakTypeCloudApp {
     status: String,
     last_text: String,
     pub(crate) last_error: Option<String>,
-    hotkey_edit: String,
+    pub hotkey_edit: String,
     pub(crate) keyterms_edit: String,
     config_load_error: Option<String>,
     next_hotkey_retry: Option<Instant>,
@@ -710,22 +710,59 @@ impl eframe::App for SpeakTypeCloudApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            // MARK: - Header
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+            // MARK: - Mode selector
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(
-                    egui::RichText::new("SpeakType Cloud")
-                        .size(22.0)
+                    egui::RichText::new("辨識模式")
+                        .size(14.0)
                         .color(crate::theme::colors::TEXT_PRIMARY)
                         .strong(),
                 );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    crate::theme::caption(ui, match self.config.transcription_mode {
-                        TranscriptionMode::BatchPtt => "Batch / PTT 模式",
-                        TranscriptionMode::RealtimePtt => "Realtime PTT 模式",
-                        TranscriptionMode::ContinuousDictation => "Continuous 模式",
-                    });
-                });
+                    // AcmeUIKit-inspired segmented controls remain in normal
+                    // reading order and wrap safely at the minimum width.
+                    if crate::theme::mode_pill(
+                        ui,
+                        self.config.transcription_mode == TranscriptionMode::BatchPtt,
+                        "Batch / PTT",
+                    )
+                    .clicked()
+                    {
+                        if self.recorder.is_recording() || self.busy {
+                            self.status = "請先停止目前錄音或等待辨識完成後再切換模式。".to_string();
+                        } else {
+                            self.config.transcription_mode = TranscriptionMode::BatchPtt;
+                        }
+                    }
+                    if crate::theme::mode_pill(
+                        ui,
+                        self.config.transcription_mode == TranscriptionMode::RealtimePtt,
+                        "Realtime PTT",
+                    )
+                    .clicked()
+                    {
+                        if self.recorder.is_recording() || self.busy {
+                            self.status = "請先停止目前錄音或等待辨識完成後再切換模式。".to_string();
+                        } else {
+                            self.config.transcription_mode = TranscriptionMode::RealtimePtt;
+                        }
+                    }
+                    if crate::theme::mode_pill(
+                        ui,
+                        self.config.transcription_mode == TranscriptionMode::ContinuousDictation,
+                        "Continuous",
+                    )
+                    .clicked()
+                    {
+                        if self.recorder.is_recording() || self.busy {
+                            self.status = "請先停止目前錄音或等待辨識完成後再切換模式。".to_string();
+                        } else {
+                            self.config.transcription_mode = TranscriptionMode::ContinuousDictation;
+                        }
+                    }
             });
             ui.add_space(2.0);
             crate::theme::caption(ui, match self.config.transcription_mode {
@@ -741,85 +778,160 @@ impl eframe::App for SpeakTypeCloudApp {
             });
             ui.add_space(12.0);
 
-            // MARK: - Status card
-            crate::theme::card_begin(ui, None);
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("狀態").size(13.0).color(crate::theme::colors::TEXT_SECONDARY));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.recorder.is_recording() {
-                        crate::theme::recording_dot(ui, true);
-                        ui.strong(
-                            egui::RichText::new("錄音中")
-                                .size(15.0)
-                                .color(crate::theme::colors::RED_RECORDING),
-                        );
-                    } else if self.busy {
-                        crate::theme::processing_dot(ui);
-                        ui.strong(
-                            egui::RichText::new("辨識中")
-                                .size(15.0)
-                                .color(crate::theme::colors::ACCENT_BLUE),
-                        );
-                    } else {
-                        let msg = &self.status;
-                        ui.strong(
-                            egui::RichText::new(msg)
-                                .size(15.0)
-                                .color(crate::theme::colors::TEXT_PRIMARY),
-                        );
-                    }
-                });
+            // MARK: - Status & Action toolbar (AcmeUIKit-inspired single compact card)
+            crate::theme::card(
+                ui,
+                Some("狀態"),
+                Some("目前系統狀態與主要控制按鈕。"),
+                |ui| {
+            // Status line
+            ui.horizontal_wrapped(|ui| {
+                if self.recorder.is_recording() {
+                    crate::theme::recording_dot(ui, true);
+                    ui.strong(
+                        egui::RichText::new("錄音中")
+                            .color(crate::theme::colors::RED_RECORDING),
+                    );
+                } else if self.busy {
+                    crate::theme::processing_dot(ui);
+                    ui.strong(
+                        egui::RichText::new("辨識中")
+                            .color(crate::theme::colors::ACCENT_BLUE),
+                    );
+                } else {
+                    let msg = &self.status;
+                    ui.strong(
+                        egui::RichText::new(msg)
+                            .color(crate::theme::colors::TEXT_PRIMARY),
+                    );
+                }
             });
-            // Error / warning messages
-            if let Some(error) = &self.last_error {
-                ui.add_space(4.0);
-                ui.colored_label(crate::theme::colors::RED_ERROR, error);
-            }
-            if let Some(error) = &self.hotkey_error {
-                ui.add_space(4.0);
-                ui.colored_label(
-                    crate::theme::colors::ORANGE_WARNING,
-                    format!("全域快捷鍵不可用：{error}"),
-                );
-            }
-            if let Some(stats) = &self.live_audio_stats {
-                let dropped = stats.dropped_chunks();
-                let capture_dropped = stats.dropped_capture_samples();
-                if dropped > 0 {
-                    ui.colored_label(
-                        crate::theme::colors::YELLOW_CAUTION,
-                        format!("Realtime 音訊背壓：已丟棄 {dropped} 個 callback chunks"),
-                    );
-                }
-                if capture_dropped > 0 {
-                    ui.colored_label(
-                        crate::theme::colors::YELLOW_CAUTION,
-                        format!("錄音保留 ring 已覆寫／略過 {capture_dropped} 個 samples"),
-                    );
-                }
-            }
-            crate::theme::card_end(ui);
-
-            // MARK: - Action buttons
-            crate::theme::card_begin(ui, None);
-            ui.horizontal(|ui| {
-                let label = if self.recorder.is_recording() {
+                let record_label = if self.recorder.is_recording() {
                     if self.config.transcription_mode == TranscriptionMode::ContinuousDictation {
                         "停止連續聽寫"
                     } else {
                         "停止錄音"
                     }
+                } else if self.config.transcription_mode == TranscriptionMode::ContinuousDictation {
+                    "開始連續聽寫"
                 } else {
-                    if self.config.transcription_mode == TranscriptionMode::ContinuousDictation {
-                        "開始連續聽寫"
-                    } else {
-                        "開始錄音"
-                    }
+                    "開始錄音"
                 };
-                if crate::theme::primary_button_enabled(ui, !self.busy, label).clicked() {
+                if crate::theme::primary_button_enabled(ui, !self.busy, record_label).clicked() {
                     self.toggle_recording();
                 }
-                if crate::theme::secondary_button(ui, "再次貼上").clicked() && !self.last_text.is_empty() {
+            // Cancel buttons line (when applicable)
+            if self.busy || self.realtime_worker.is_some() {
+                ui.horizontal(|ui| {
+                    if crate::theme::primary_button_enabled(
+                        ui,
+                        self.busy
+                            && !self
+                                .active_job
+                                .as_ref()
+                                .is_some_and(|active| active.cancelling),
+                        "取消辨識",
+                    )
+                    .on_disabled_hover_text("目前沒有進行中的辨識工作")
+                    .clicked()
+                    {
+                        self.cancel_transcription();
+                    }
+                    if crate::theme::primary_button_enabled(
+                        ui,
+                        self.realtime_worker.is_some(),
+                        "取消 Realtime",
+                    )
+                    .on_disabled_hover_text("沒有進行中的 Realtime session")
+                    .clicked()
+                    {
+                        self.cancel_realtime("Realtime session 已由使用者取消");
+                    }
+                });
+            }
+            // Error / warning messages (§9: color + icon + text)
+            if let Some(error) = &self.last_error {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.colored_label(crate::theme::colors::RED_ERROR, "✗");
+                    ui.colored_label(crate::theme::colors::RED_ERROR, error);
+                });
+            }
+            if let Some(error) = &self.hotkey_error {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.colored_label(crate::theme::colors::ORANGE_WARNING, "⚠");
+                    ui.colored_label(
+                        crate::theme::colors::ORANGE_WARNING,
+                        format!("全域快捷鍵不可用：{error}"),
+                    );
+                });
+            }
+            if let Some(stats) = &self.live_audio_stats {
+                let dropped = stats.dropped_chunks();
+                let capture_dropped = stats.dropped_capture_samples();
+                if dropped > 0 {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(crate::theme::colors::YELLOW_CAUTION, "⚡");
+                        ui.colored_label(
+                            crate::theme::colors::YELLOW_CAUTION,
+                            format!("Realtime 音訊背壓：已丟棄 {dropped} 個 callback chunks"),
+                        );
+                    });
+                }
+                if capture_dropped > 0 {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(crate::theme::colors::YELLOW_CAUTION, "⚡");
+                        ui.colored_label(
+                            crate::theme::colors::YELLOW_CAUTION,
+                            format!("錄音保留 ring 已覆寫／略過 {capture_dropped} 個 samples"),
+                        );
+                    });
+                }
+            }
+            });
+            ui.add_space(12.0);
+
+            // Batch fallback warning
+            if self.batch_fallback_audio.is_some() {
+                crate::theme::card(ui, None, None, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(crate::theme::colors::ORANGE_WARNING, "⚠");
+                    ui.colored_label(
+                        crate::theme::colors::ORANGE_WARNING,
+                        "Realtime 失敗後不會自動重傳。此段音訊可能包含已顯示的 partial；請確認後才改用 Batch。",
+                    );
+                });
+                if crate::theme::primary_button(ui, "確認改用 Batch 上傳此段音訊").clicked() {
+                    self.confirm_batch_fallback();
+                }
+                });
+                ui.add_space(12.0);
+            }
+
+            // MARK: - Latest transcript card with inline actions (AcmeUIKit pattern)
+            crate::theme::card(
+                ui,
+                Some("最近辨識文字"),
+                Some("點選「複製」或「再次注入」使用本次辨識結果。"),
+                |ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut self.last_text)
+                    .desired_rows(4)
+                    .desired_width(f32::INFINITY)
+                    .font(egui::TextStyle::Monospace),
+            );
+            ui.horizontal_wrapped(|ui| {
+                if crate::theme::ghost_button(ui, "📋 複製文字").clicked() {
+                    match copy_text(&self.last_text) {
+                        Ok(()) => self.status = "已複製到剪貼簿".to_string(),
+                        Err(error) => {
+                            self.status = "複製失敗，文字仍保留".to_string();
+                            self.last_error = Some(error.to_string());
+                        }
+                    }
+                }
+                if crate::theme::ghost_button(ui, "↩ 再次貼上").clicked() && !self.last_text.is_empty() {
                     if let Some(target) = self.targets.last_text() {
                         if let Err(injection_error) = inject_text(
                             Some(target),
@@ -847,60 +959,13 @@ impl eframe::App for SpeakTypeCloudApp {
                         }
                     }
                 }
-                if crate::theme::secondary_button(ui, "複製文字").clicked() {
-                    match copy_text(&self.last_text) {
-                        Ok(()) => self.status = "已複製到剪貼簿".to_string(),
-                        Err(error) => {
-                            self.status = "複製失敗，文字仍保留".to_string();
-                            self.last_error = Some(error.to_string());
-                        }
-                    }
-                }
             });
-            ui.horizontal(|ui| {
-                if crate::theme::primary_button_enabled(
-                    ui,
-                    self.busy
-                        && !self
-                            .active_job
-                            .as_ref()
-                            .is_some_and(|active| active.cancelling),
-                    "取消辨識",
-                )
-                .on_disabled_hover_text("目前沒有進行中的辨識工作")
-                .clicked()
-                {
-                    self.cancel_transcription();
-                }
-                if crate::theme::primary_button_enabled(
-                    ui,
-                    self.realtime_worker.is_some(),
-                    "取消 Realtime",
-                )
-                .on_disabled_hover_text("沒有進行中的 Realtime session")
-                .clicked()
-                {
-                    self.cancel_realtime("Realtime session 已由使用者取消");
-                }
             });
-            crate::theme::card_end(ui);
+            ui.add_space(12.0);
 
-            // Batch fallback warning
-            if self.batch_fallback_audio.is_some() {
-                crate::theme::card_begin(ui, None);
-                ui.colored_label(
-                    crate::theme::colors::ORANGE_WARNING,
-                    "Realtime 失敗後不會自動重傳。此段音訊可能包含已顯示的 partial；請確認後才改用 Batch。",
-                );
-                if crate::theme::primary_button(ui, "確認改用 Batch 上傳此段音訊").clicked() {
-                    self.confirm_batch_fallback();
-                }
-                crate::theme::card_end(ui);
-            }
-
-            // MARK: - Realtime partial
+            // MARK: - Realtime partial (conditional)
             if !self.partial_text.is_empty() {
-                crate::theme::card_begin(ui, Some("Realtime partial 字幕（尚未寫入 history／注入）"));
+                crate::theme::card(ui, Some("Realtime partial 字幕（尚未寫入 history／注入）"), None, |ui| {
                 ui.add(
                     egui::TextEdit::multiline(&mut self.partial_text)
                         .desired_rows(2)
@@ -908,81 +973,9 @@ impl eframe::App for SpeakTypeCloudApp {
                         .interactive(false)
                         .font(egui::TextStyle::Monospace),
                 );
-                crate::theme::card_end(ui);
-            }
-
-            // MARK: - Latest transcript
-            crate::theme::card_begin(ui, Some("最近辨識文字"));
-            ui.add(
-                egui::TextEdit::multiline(&mut self.last_text)
-                    .desired_rows(4)
-                    .desired_width(f32::INFINITY)
-                    .font(egui::TextStyle::Monospace),
-            );
-            crate::theme::card_end(ui);
-
-            // MARK: - Recording & Output settings
-            crate::theme::section_header(ui, "錄音與輸出設定");
-            crate::theme::card_begin(ui, None);
-            egui::ComboBox::from_label("麥克風")
-                .selected_text(
-                    self.config
-                        .recording
-                        .input_device_name
-                        .as_deref()
-                        .unwrap_or("系統預設"),
-                )
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut self.config.recording.input_device_name,
-                        None,
-                        "系統預設",
-                    );
-                    for device in &self.devices {
-                        ui.selectable_value(
-                            &mut self.config.recording.input_device_name,
-                            Some(device.clone()),
-                            device,
-                        );
-                    }
                 });
-            ui.add(
-                egui::Slider::new(&mut self.config.recording.gain, 0.1..=4.0)
-                    .text("麥克風增益"),
-            );
-            ui.add(
-                egui::Slider::new(
-                    &mut self.config.recording.max_duration_secs,
-                    1..=MAX_RECORDING_DURATION_SECS,
-                )
-                .text("Batch／Realtime PTT 錄音上限（秒）"),
-            );
-            ui.horizontal(|ui| {
-                ui.label("全域快捷鍵");
-                ui.text_edit_singleline(&mut self.hotkey_edit);
-            });
-            ui.checkbox(&mut self.config.hold_to_record, "按住錄音、放開送出（PTT）");
-            ui.checkbox(&mut self.config.launch_at_login, "Windows 登入時自動啟動");
-            ui.checkbox(&mut self.config.output.auto_inject, "自動輸入原本焦點視窗");
-            ui.checkbox(
-                &mut self.config.output.restore_clipboard,
-                "貼上後還原文字剪貼簿",
-            );
-            ui.checkbox(
-                &mut self.config.output.preserve_target_window,
-                "錄音開始時記住目標視窗",
-            );
-            ui.checkbox(
-                &mut self.config.save_recordings,
-                "保留 WAV 錄音（預設關閉）",
-            );
-            crate::theme::card_end(ui);
-
-            // MARK: - Save button
-            ui.add_space(12.0);
-            if crate::theme::primary_button(ui, "儲存設定").clicked() {
-                self.save_settings();
             }
+            }); // ScrollArea
         });
         if self.realtime_worker.is_some()
             && realtime_settings_fingerprint(&self.config) != realtime_settings_before

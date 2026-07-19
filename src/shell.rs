@@ -1,5 +1,5 @@
 use crate::app::SpeakTypeCloudApp;
-use crate::config::AppConfig;
+use crate::config::{AppConfig, MAX_RECORDING_DURATION_SECS};
 use crate::history::{self, HistoryEntry};
 use crate::providers;
 use crate::secrets;
@@ -164,6 +164,10 @@ pub struct AppleShell {
     models_loading: bool,
     models_error: Option<String>,
     models_rx: Option<Receiver<ModelsFetchResult>>,
+    // Confirm dialog state (§4.3)
+    confirm_exit: bool,
+    confirm_clear_key: Option<ProviderKey>,
+    confirm_delete_entry: Option<String>,
 }
 
 #[derive(Clone)]
@@ -219,7 +223,6 @@ enum UpdateActionKind {
 /// egui closure to avoid borrow conflicts.
 enum HistoryAction {
     Cleanup(u64),
-    Delete(String),
     Play(String),
 }
 
@@ -304,6 +307,9 @@ impl AppleShell {
             models_loading: false,
             models_error: None,
             models_rx: None,
+            confirm_exit: false,
+            confirm_clear_key: None,
+            confirm_delete_entry: None,
         }
     }
 
@@ -390,22 +396,148 @@ impl AppleShell {
         ctx.request_repaint();
     }
 
-    fn show_window_controls(&mut self, ctx: &egui::Context) {
+    /// Render confirmation dialogs for dangerous operations (§4.3).
+    fn show_confirm_dialogs(&mut self, ctx: &egui::Context) {
+        // Exit confirm
+        if self.confirm_exit {
+            let mut open = true;
+            egui::Window::new("確認退出")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.label("正在進行中的錄音或辨識將會中止。確定要退出 SpeakType Cloud 嗎？");
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if crate::theme::destructive_button(ui, "退出").clicked() {
+                            self.request_exit(ctx);
+                            self.confirm_exit = false;
+                        }
+                        if crate::theme::secondary_button(ui, "取消").clicked() {
+                            self.confirm_exit = false;
+                        }
+                    });
+                });
+            if !open {
+                self.confirm_exit = false;
+            }
+        }
+        // API key clear confirm
+        if let Some(provider) = self.confirm_clear_key.take() {
+            let provider_name = match provider {
+                ProviderKey::OpenAi => "OpenAI",
+                ProviderKey::Xai => "xAI",
+                ProviderKey::OpenRouter => "OpenRouter",
+            };
+            let mut open = true;
+            egui::Window::new("確認清除 API Key")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.label(format!(
+                        "確定要清除 {provider_name} 的 API Key 嗎？此操作無法還原。"
+                    ));
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if crate::theme::destructive_button(ui, "清除").clicked() {
+                            self.apply_key_action(KeyAction::Clear(provider));
+                            self.confirm_clear_key = None;
+                        }
+                        if crate::theme::secondary_button(ui, "取消").clicked() {
+                            self.confirm_clear_key = None;
+                        }
+                    });
+                });
+            if !open {
+                self.confirm_clear_key = None;
+            }
+        }
+        // History delete confirm
+        if let Some(id) = self.confirm_delete_entry.take() {
+            let mut open = true;
+            egui::Window::new("確認刪除")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.label("確定要刪除此筆辨識紀錄嗎？此操作無法還原，音訊與文字將一併清除。");
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if crate::theme::destructive_button(ui, "刪除").clicked() {
+                            if let Err(error) = history::delete_entry(&id) {
+                                self.app.last_error = Some(error);
+                            }
+                            self.history_entries = history::load_all();
+                            self.confirm_delete_entry = None;
+                        }
+                        if crate::theme::secondary_button(ui, "取消").clicked() {
+                            self.confirm_delete_entry = None;
+                        }
+                    });
+                });
+            if !open {
+                self.confirm_delete_entry = None;
+            }
+        }
+    }
+
+    fn show_main_toolbar(&mut self, ctx: &egui::Context) {
         let mut hide = false;
-        let mut exit = false;
-        egui::Area::new(egui::Id::new("window-lifecycle-controls"))
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-18.0, -18.0))
-            .order(egui::Order::Foreground)
+        egui::TopBottomPanel::top("main-toolbar")
+            .exact_height(crate::theme::MAIN_TOOLBAR_HEIGHT)
+            .frame(
+                egui::Frame::none()
+                    .fill(crate::theme::colors::BG_CARD)
+                    .stroke(egui::Stroke::new(1.0, crate::theme::colors::SEPARATOR))
+                    .inner_margin(egui::Margin::symmetric(18.0, 8.0)),
+            )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if crate::theme::secondary_button(ui, "隱藏到系統匣")
+                    ui.label(
+                        egui::RichText::new("SpeakType Cloud")
+                            .size(20.0)
+                            .color(crate::theme::colors::TEXT_PRIMARY)
+                            .strong(),
+                    );
+                    ui.add_space(24.0);
+                    if crate::theme::secondary_button(ui, "開啟設定")
+                        .on_hover_text("供應商、模型、API Key 與辨識設定")
+                        .clicked()
+                    {
+                        self.settings_window_open = true;
+                        self.key_message = None;
+                    }
+                    if crate::theme::secondary_button(ui, "檢視歷史紀錄").clicked() {
+                        self.history_entries = history::load_all();
+                        self.history_window_open = true;
+                    }
+                    if crate::theme::secondary_button(ui, "檢查更新").clicked() {
+                        self.update_window_open = true;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    let tray_note = if self.tray.is_some() {
+                        "關閉主視窗後仍可從系統匣喚回"
+                    } else {
+                        "系統匣目前不可用，請使用退出程式"
+                    };
+                    crate::theme::caption(ui, tray_note);
+                    if ui
+                        .add_enabled_ui(self.tray.is_some(), |ui| {
+                            crate::theme::secondary_button(ui, "隱藏到系統匣")
+                        })
+                        .inner
                         .on_disabled_hover_text("系統匣初始化失敗，請使用退出程式")
                         .clicked()
                     {
                         hide = true;
                     }
                     if crate::theme::destructive_button(ui, "退出程式").clicked() {
-                        exit = true;
+                        self.confirm_exit = true;
                     }
                 });
             });
@@ -418,47 +550,6 @@ impl AppleShell {
             }
             ctx.request_repaint_after(Duration::from_millis(250));
         }
-        if exit {
-            self.request_exit(ctx);
-        }
-    }
-
-    fn show_settings_launcher(&mut self, ctx: &egui::Context) {
-        egui::Area::new(egui::Id::new("settings-launcher"))
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-18.0, 18.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                if crate::theme::secondary_button(ui, "設定")
-                    .on_hover_text("供應商、模型、API Key 與辨識設定")
-                    .clicked()
-                {
-                    self.settings_window_open = true;
-                    self.key_message = None;
-                }
-            });
-    }
-
-    fn show_history_launcher(&mut self, ctx: &egui::Context) {
-        egui::Area::new(egui::Id::new("history-launcher"))
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-18.0, 98.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                if crate::theme::secondary_button(ui, "歷史紀錄").clicked() {
-                    self.history_entries = history::load_all();
-                    self.history_window_open = true;
-                }
-            });
-    }
-
-    fn show_update_launcher(&mut self, ctx: &egui::Context) {
-        egui::Area::new(egui::Id::new("update-launcher"))
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-18.0, 58.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                if crate::theme::secondary_button(ui, "檢查更新").clicked() {
-                    self.update_window_open = true;
-                }
-            });
     }
 
     fn poll_update_worker(&mut self) {
@@ -594,7 +685,10 @@ impl AppleShell {
                 ui.add_space(8.0);
                 match &self.update_state {
                     UpdateState::Disabled(reason) => {
-                        ui.colored_label(crate::theme::colors::ORANGE_WARNING, reason);
+                        ui.horizontal(|ui| {
+                            ui.colored_label(crate::theme::colors::ORANGE_WARNING, "⚠");
+                            ui.colored_label(crate::theme::colors::ORANGE_WARNING, reason);
+                        });
                         ui.hyperlink_to(
                             "手動開啟 GitHub Releases",
                             "https://github.com/stevenke1981/SpeakType-Cloud/releases",
@@ -630,10 +724,13 @@ impl AppleShell {
                         ui.strong(format!("版本 {} 已驗證完成", staged.version));
                         ui.label("Authenticode：簽章有效，且簽署憑證符合內建信任根");
                         ui.label(format!("暫存路徑：{}", staged.installer_path.display()));
-                        ui.colored_label(
-                            crate::theme::colors::ORANGE_WARNING,
-                            "下一步會啟動可見的安裝精靈；不會靜默安裝。",
-                        );
+                        ui.horizontal(|ui| {
+                            ui.colored_label(crate::theme::colors::ORANGE_WARNING, "⚠");
+                            ui.colored_label(
+                                crate::theme::colors::ORANGE_WARNING,
+                                "下一步會啟動可見的安裝精靈；不會靜默安裝。",
+                            );
+                        });
                         if crate::theme::primary_button(ui, "啟動安裝程式").clicked() {
                             action = Some(UpdateAction::Launch(staged.clone()));
                         }
@@ -642,7 +739,10 @@ impl AppleShell {
                         ui.label("安裝精靈已啟動；請在安裝視窗中確認或取消。");
                     }
                     UpdateState::Error(error) => {
-                        ui.colored_label(crate::theme::colors::RED_ERROR, error);
+                        ui.horizontal(|ui| {
+                            ui.colored_label(crate::theme::colors::RED_ERROR, "✗");
+                            ui.colored_label(crate::theme::colors::RED_ERROR, error);
+                        });
                         if crate::theme::primary_button(ui, "重新檢查").clicked() {
                             action = Some(UpdateAction::Check);
                         }
@@ -835,10 +935,13 @@ impl AppleShell {
                             }
                         });
                         if self.app.config.transcription_mode.is_realtime() {
-                            ui.colored_label(
-                                crate::theme::colors::ORANGE_WARNING,
-                                "OpenRouter 僅支援 Batch / PTT 模式。請切換至 Batch / PTT。",
-                            );
+                            ui.horizontal(|ui| {
+                                ui.colored_label(crate::theme::colors::ORANGE_WARNING, "⚠");
+                                ui.colored_label(
+                                    crate::theme::colors::ORANGE_WARNING,
+                                    "OpenRouter 僅支援 Batch / PTT 模式。請切換至 Batch / PTT。",
+                                );
+                            });
                         } else {
                             ui.label("OpenRouter 僅支援 Batch / PTT 模式；選用 Realtime 模式時，設定驗證會拒絕。");
                         }
@@ -875,7 +978,10 @@ impl AppleShell {
                     }
                 }
                 if let Some(err) = &self.models_error {
-                    ui.colored_label(crate::theme::colors::RED_ERROR, err);
+                    ui.horizontal(|ui| {
+                        ui.colored_label(crate::theme::colors::RED_ERROR, "✗");
+                        ui.colored_label(crate::theme::colors::RED_ERROR, err);
+                    });
                 }
                 ui.checkbox(
                     &mut self.app.config.text_processing.normalize_chinese_punctuation,
@@ -919,6 +1025,79 @@ impl AppleShell {
                     "啟用語音命令（僅完整片語匹配）",
                 );
 
+                crate::theme::section_header(ui, "錄音設定");
+                crate::theme::card_begin(ui, None);
+                egui::ComboBox::from_label("麥克風")
+                    .selected_text(
+                        self.app
+                            .config
+                            .recording
+                            .input_device_name
+                            .as_deref()
+                            .unwrap_or("系統預設"),
+                    )
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.app.config.recording.input_device_name,
+                            None,
+                            "系統預設",
+                        );
+                        for device in &self.app.devices {
+                            ui.selectable_value(
+                                &mut self.app.config.recording.input_device_name,
+                                Some(device.clone()),
+                                device,
+                            );
+                        }
+                    });
+                ui.add(
+                    egui::Slider::new(&mut self.app.config.recording.gain, 0.1..=4.0)
+                        .text("麥克風增益"),
+                );
+                ui.add(
+                    egui::Slider::new(
+                        &mut self.app.config.recording.max_duration_secs,
+                        1..=MAX_RECORDING_DURATION_SECS,
+                    )
+                    .text("Batch／Realtime PTT 錄音上限（秒）"),
+                );
+                ui.add(
+                    egui::Slider::new(
+                        &mut self.app.config.recording.min_duration_ms,
+                        100..=5_000,
+                    )
+                    .text("最短錄音時間 (ms)"),
+                );
+                ui.checkbox(
+                    &mut self.app.config.hold_to_record,
+                    "按住錄音、放開送出（PTT）",
+                );
+                ui.checkbox(
+                    &mut self.app.config.launch_at_login,
+                    "Windows 登入時自動啟動",
+                );
+                ui.checkbox(
+                    &mut self.app.config.output.auto_inject,
+                    "自動輸入原本焦點視窗",
+                );
+                ui.checkbox(
+                    &mut self.app.config.output.restore_clipboard,
+                    "貼上後還原文字剪貼簿",
+                );
+                ui.checkbox(
+                    &mut self.app.config.output.preserve_target_window,
+                    "錄音開始時記住目標視窗",
+                );
+                ui.checkbox(
+                    &mut self.app.config.save_recordings,
+                    "保留 WAV 錄音（預設關閉）",
+                );
+                ui.horizontal(|ui| {
+                    ui.label("全域快捷鍵");
+                    ui.text_edit_singleline(&mut self.app.hotkey_edit);
+                });
+                crate::theme::card_end(ui);
+
                 crate::theme::section_header(ui, "API 金鑰");
                 ui.label(
                     egui::RichText::new(
@@ -932,7 +1111,7 @@ impl AppleShell {
                 // OpenAI card
                 crate::theme::card_begin(ui, None);
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("OpenAI").size(17.0).color(crate::theme::colors::TEXT_PRIMARY).strong());
+                    ui.label(egui::RichText::new("OpenAI").size(14.0).color(crate::theme::colors::TEXT_PRIMARY).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let (label, color) = configured_badge(openai_configured);
                         ui.colored_label(color, label);
@@ -940,6 +1119,7 @@ impl AppleShell {
                 });
                 crate::theme::caption(ui, &format!("環境變數：{openai_env}"));
                 ui.add_space(4.0);
+                ui.label("API Key");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.openai_key_edit)
                         .password(!self.show_api_keys)
@@ -950,10 +1130,10 @@ impl AppleShell {
                     if crate::theme::primary_button(ui, "儲存 OpenAI Key").clicked() {
                         key_action = Some(KeyAction::Save(ProviderKey::OpenAi));
                     }
-                    if crate::theme::secondary_button(ui, "清除").clicked()
+                    if crate::theme::destructive_button(ui, "清除").clicked()
                         && openai_configured
                     {
-                        key_action = Some(KeyAction::Clear(ProviderKey::OpenAi));
+                        self.confirm_clear_key = Some(ProviderKey::OpenAi);
                     }
                 });
                 crate::theme::card_end(ui);
@@ -962,7 +1142,7 @@ impl AppleShell {
                 // xAI card
                 crate::theme::card_begin(ui, None);
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("xAI").size(17.0).color(crate::theme::colors::TEXT_PRIMARY).strong());
+                    ui.label(egui::RichText::new("xAI").size(14.0).color(crate::theme::colors::TEXT_PRIMARY).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let (label, color) = configured_badge(xai_configured);
                         ui.colored_label(color, label);
@@ -970,6 +1150,7 @@ impl AppleShell {
                 });
                 crate::theme::caption(ui, &format!("環境變數：{xai_env}"));
                 ui.add_space(4.0);
+                ui.label("API Key");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.xai_key_edit)
                         .password(!self.show_api_keys)
@@ -980,10 +1161,10 @@ impl AppleShell {
                     if crate::theme::primary_button(ui, "儲存 xAI Key").clicked() {
                         key_action = Some(KeyAction::Save(ProviderKey::Xai));
                     }
-                    if crate::theme::secondary_button(ui, "清除").clicked()
+                    if crate::theme::destructive_button(ui, "清除").clicked()
                         && xai_configured
                     {
-                        key_action = Some(KeyAction::Clear(ProviderKey::Xai));
+                        self.confirm_clear_key = Some(ProviderKey::Xai);
                     }
                 });
                 crate::theme::card_end(ui);
@@ -992,7 +1173,7 @@ impl AppleShell {
                 // OpenRouter card
                 crate::theme::card_begin(ui, None);
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("OpenRouter").size(17.0).color(crate::theme::colors::TEXT_PRIMARY).strong());
+                    ui.label(egui::RichText::new("OpenRouter").size(14.0).color(crate::theme::colors::TEXT_PRIMARY).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let (label, color) = configured_badge(openrouter_configured);
                         ui.colored_label(color, label);
@@ -1000,6 +1181,7 @@ impl AppleShell {
                 });
                 crate::theme::caption(ui, &format!("環境變數：{openrouter_env}"));
                 ui.add_space(4.0);
+                ui.label("API Key");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.openrouter_key_edit)
                         .password(!self.show_api_keys)
@@ -1010,10 +1192,10 @@ impl AppleShell {
                     if crate::theme::primary_button(ui, "儲存 OpenRouter Key").clicked() {
                         key_action = Some(KeyAction::Save(ProviderKey::OpenRouter));
                     }
-                    if crate::theme::secondary_button(ui, "清除").clicked()
+                    if crate::theme::destructive_button(ui, "清除").clicked()
                         && openrouter_configured
                     {
-                        key_action = Some(KeyAction::Clear(ProviderKey::OpenRouter));
+                        self.confirm_clear_key = Some(ProviderKey::OpenRouter);
                     }
                 });
                 crate::theme::card_end(ui);
@@ -1024,7 +1206,7 @@ impl AppleShell {
                 ui.add_space(8.0);
                 ui.label(
                     egui::RichText::new("API Key 環境變數名稱設定")
-                        .size(15.0)
+                        .size(14.0)
                         .strong(),
                 );
                 ui.label(
@@ -1032,13 +1214,13 @@ impl AppleShell {
                         "變更後需要點擊下方「儲存設定」才會生效。",
                     )
                     .small()
-                    .color(egui::Color32::from_rgb(110, 110, 115)),
+                    .color(crate::theme::colors::TEXT_SECONDARY),
                 );
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("OpenAI")
                             .small()
-                            .color(egui::Color32::from_rgb(110, 110, 115)),
+                            .color(crate::theme::colors::TEXT_SECONDARY),
                     );
                     ui.add_sized(
                         egui::vec2(180.0, 18.0),
@@ -1053,7 +1235,7 @@ impl AppleShell {
                     ui.label(
                         egui::RichText::new("xAI")
                             .small()
-                            .color(egui::Color32::from_rgb(110, 110, 115)),
+                            .color(crate::theme::colors::TEXT_SECONDARY),
                     );
                     ui.add_sized(
                         egui::vec2(180.0, 18.0),
@@ -1068,7 +1250,7 @@ impl AppleShell {
                     ui.label(
                         egui::RichText::new("OpenRouter")
                             .small()
-                            .color(egui::Color32::from_rgb(110, 110, 115)),
+                            .color(crate::theme::colors::TEXT_SECONDARY),
                     );
                     ui.add_sized(
                         egui::vec2(180.0, 18.0),
@@ -1081,18 +1263,24 @@ impl AppleShell {
                 });
 
                 if let Some(warning) = &self.startup_warning {
-                    ui.colored_label(
-                        crate::theme::colors::ORANGE_WARNING,
-                        format!("啟動提醒：{warning}"),
-                    );
+                    ui.horizontal(|ui| {
+                        ui.colored_label(crate::theme::colors::ORANGE_WARNING, "⚠");
+                        ui.colored_label(
+                            crate::theme::colors::ORANGE_WARNING,
+                            format!("啟動提醒：{warning}"),
+                        );
+                    });
                 }
                 if let Some(message) = &self.key_message {
-                    let color = if message.success {
-                        crate::theme::colors::GREEN_SUCCESS
+                    let (icon, color) = if message.success {
+                        ("✓", crate::theme::colors::GREEN_SUCCESS)
                     } else {
-                        crate::theme::colors::RED_ERROR
+                        ("✗", crate::theme::colors::RED_ERROR)
                     };
-                    ui.colored_label(color, &message.text);
+                    ui.horizontal(|ui| {
+                        ui.colored_label(color, icon);
+                        ui.colored_label(color, &message.text);
+                    });
                 }
 
                 ui.add_space(16.0);
@@ -1202,12 +1390,12 @@ impl AppleShell {
                                     } else {
                                         ui.label("-");
                                     }
-                                    // Delete button
+                                    // Delete button (§4.3: confirm dialog)
                                     if crate::theme::destructive_button(ui, "🗑")
                                         .on_hover_text("刪除此筆紀錄")
                                         .clicked()
                                     {
-                                        actions.push(HistoryAction::Delete(entry.id.clone()));
+                                        self.confirm_delete_entry = Some(entry.id.clone());
                                     }
                                     ui.end_row();
                                 }
@@ -1237,12 +1425,6 @@ impl AppleShell {
                         Err(error) => {
                             self.app.last_error = Some(format!("清理失敗：{error}"));
                         }
-                    }
-                    self.history_entries = history::load_all();
-                }
-                HistoryAction::Delete(id) => {
-                    if let Err(error) = history::delete_entry(&id) {
-                        self.app.last_error = Some(error);
                     }
                     self.history_entries = history::load_all();
                 }
@@ -1346,14 +1528,12 @@ impl eframe::App for AppleShell {
         self.handle_window_lifecycle(ctx);
         self.poll_update_worker();
         self.poll_model_fetch();
+        self.show_main_toolbar(ctx);
         eframe::App::update(&mut self.app, ctx, frame);
-        self.show_settings_launcher(ctx);
-        self.show_history_launcher(ctx);
-        self.show_update_launcher(ctx);
         self.show_settings_window(ctx);
         self.show_history_window(ctx);
         self.show_update_window(ctx);
-        self.show_window_controls(ctx);
+        self.show_confirm_dialogs(ctx);
     }
 }
 
