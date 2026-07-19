@@ -80,7 +80,7 @@ impl Render for SpeakTypeAcmeApp {
                     .flex()
                     .gap_2()
                     .child(Badge::new("OpenAI").primary())
-                    .child(Badge::new("xAI").secondary())
+                    .child(Badge::new("xAI").warning())
                     .child(Badge::new("OpenRouter")),
             );
 
