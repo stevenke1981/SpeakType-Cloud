@@ -11,6 +11,20 @@
 5. 清理辨識文字，還原原視窗，使用剪貼簿 + `Ctrl+V` 注入。
 6. 可選擇還原原剪貼簿內容、保留錄音、記錄文字歷史。
 
+## GPUI + AcmeUIKit 版本
+
+專案正在建立新的原生 GPUI 前端，並使用 [AcmeUIKit](https://github.com/stevenke1981/AcmeUIKit) 作為元件系統。遷移期間保留既有 eframe/egui 版本，兩個前端可獨立建置，避免影響目前可用的錄音、Provider、熱鍵與文字注入流程。
+
+```powershell
+# 既有穩定版
+cargo run --bin speaktype-cloud
+
+# GPUI + AcmeUIKit 預覽版
+cargo run --no-default-features --features gpui-ui --bin speaktype-cloud-acme
+```
+
+目前 GPUI 預覽版完成應用程式視窗、Acme 主題與主要資訊卡骨架。完整遷移里程碑與功能對應請見 `docs/GPUI_ACME_MIGRATION.md`。
+
 ## API Key
 
 程式右上角提供 **「API 金鑰」** 按鈕，可直接在 GUI 中設定 OpenAI、xAI 與 OpenRouter API Key：
