@@ -37,11 +37,18 @@ pub struct SpeakTypeCloudApp {
     busy: bool,
     status: String,
     last_text: String,
-    last_error: Option<String>,
+    pub(crate) last_error: Option<String>,
     hotkey_edit: String,
     pub(crate) keyterms_edit: String,
     config_load_error: Option<String>,
     next_hotkey_retry: Option<Instant>,
+    /// History entry ID from `history::next_id()`, set in
+    /// `spawn_batch_transcription()` before the job is sent.  The audio WAV is
+    /// already saved when this is `Some`.  `accept()` uses it to build the
+    /// `HistoryEntry`; for realtime the audio is saved inside `accept()` from
+    /// `pending_realtime_audio`.
+    pending_history_id: Option<String>,
+    last_history_cleanup: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -147,6 +154,8 @@ impl SpeakTypeCloudApp {
             last_text: String::new(),
             last_error: config_load_error.clone(),
             config_load_error,
+            pending_history_id: None,
+            last_history_cleanup: None,
             next_hotkey_retry: if hotkey_failed_at_startup {
                 Some(Instant::now() + Duration::from_secs(4))
             } else {
@@ -240,6 +249,11 @@ impl SpeakTypeCloudApp {
     }
 
     fn spawn_batch_transcription(&mut self, audio: RecordedAudio) {
+        // Save audio before spawning so the audio file is ready when
+        // accept() runs after the job completes.
+        let hist_id = history::next_id();
+        self.pending_history_id = history::save_audio(&hist_id, &audio).ok().map(|_| hist_id);
+
         let (tx, rx) = mpsc::channel();
         let id = JobId(self.next_job_id);
         self.next_job_id = self.next_job_id.wrapping_add(1).max(1);
@@ -537,11 +551,26 @@ impl SpeakTypeCloudApp {
             self.status = "語音命令已執行：不輸出文字".to_string();
             return;
         }
+        // Persist history entry with audio reference.
+        let hist_id = self
+            .pending_history_id
+            .take()
+            .unwrap_or_else(history::next_id);
+        let audio_stem = if history::audio_path(&hist_id).exists() {
+            Some(history::audio_stem(&hist_id))
+        } else if let Some(audio) = &self.pending_realtime_audio {
+            // Realtime mode — audio wasn't saved yet.
+            history::save_audio(&hist_id, audio).ok()
+        } else {
+            None
+        };
         let entry = HistoryEntry {
+            id: hist_id,
             created_at: Local::now(),
             provider: job.response.provider.clone(),
             duration_secs: job.local_duration_secs,
             text: text.clone(),
+            audio: audio_stem,
         };
         if let Err(error) = history::append(&entry) {
             record_nonfatal_error(&mut self.last_error, &format!("歷史紀錄未保存：{error}"));
@@ -962,6 +991,32 @@ impl eframe::App for SpeakTypeCloudApp {
         }
         // Smart repaint scheduling — only repaint when state requires it:
         // - Recording active: poll at 8 Hz for timer/duration display
+        // Run history cleanup once per day (or on first update).
+        let now = Instant::now();
+        let should_cleanup = self
+            .last_history_cleanup
+            .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(86400));
+        if should_cleanup {
+            self.last_history_cleanup = Some(now);
+            if self.config.history.retention_days > 0 {
+                match history::cleanup_older_than(self.config.history.retention_days) {
+                    Ok(count) if count > 0 => {
+                        record_nonfatal_error(
+                            &mut self.last_error,
+                            &format!("已清理 {count} 筆過期歷史紀錄"),
+                        );
+                    }
+                    Err(error) => {
+                        record_nonfatal_error(
+                            &mut self.last_error,
+                            &format!("歷史紀錄清理失敗：{error}"),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // - Realtime session active: poll at 28 Hz for partial subtitles
         // - Batch transcription busy: poll at 8 Hz for completion
         // - Otherwise: poll at 4 Hz for tray/hotkey events (idle mode)

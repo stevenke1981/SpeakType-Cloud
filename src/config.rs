@@ -63,6 +63,12 @@ impl TranscriptionMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryConfig {
+    /// Number of days to keep history entries.  0 = keep forever.
+    pub retention_days: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChineseVariant {
@@ -282,6 +288,7 @@ pub struct AppConfig {
     pub realtime: RealtimeConfig,
     pub output: OutputConfig,
     pub text_processing: TextProcessingConfig,
+    pub history: HistoryConfig,
 }
 
 impl Default for AppConfig {
@@ -302,6 +309,7 @@ impl Default for AppConfig {
             realtime: RealtimeConfig::default(),
             output: OutputConfig::default(),
             text_processing: TextProcessingConfig::default(),
+            history: HistoryConfig::default(),
         }
     }
 }
@@ -374,6 +382,11 @@ impl AppConfig {
         {
             return Err(AppError::Configuration(
                 "Realtime VAD 設定超出安全範圍".to_string(),
+            ));
+        }
+        if !(0..=36_500).contains(&self.history.retention_days) {
+            return Err(AppError::Configuration(
+                "歷史紀錄保留天數必須介於 0 與 36500 天".to_string(),
             ));
         }
         if self.provider == ProviderKind::OpenAi && self.openai.model.trim().is_empty() {

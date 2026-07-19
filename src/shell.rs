@@ -1,5 +1,6 @@
 use crate::app::SpeakTypeCloudApp;
 use crate::config::AppConfig;
+use crate::history::{self, HistoryEntry};
 use crate::providers;
 use crate::secrets;
 use crate::updater::{self, StagedUpdate, UpdateManifest};
@@ -145,6 +146,9 @@ pub struct AppleShell {
     exit_requested: bool,
     window_hidden: bool,
     settings_window_open: bool,
+    history_window_open: bool,
+    history_entries: Vec<HistoryEntry>,
+    history_player: Option<HistoryAudioPlayer>,
     show_api_keys: bool,
     openai_key_edit: String,
     xai_key_edit: String,
@@ -211,6 +215,51 @@ enum UpdateActionKind {
     Launch,
 }
 
+/// Actions collected from the history window UI and executed outside the
+/// egui closure to avoid borrow conflicts.
+enum HistoryAction {
+    Cleanup(u64),
+    Delete(String),
+    Play(String),
+}
+
+/// Wraps `rodio` for history audio playback.  Created on demand so that
+/// a missing audio device does not prevent the app from starting.
+struct HistoryAudioPlayer {
+    _stream: rodio::OutputStream,
+    sink: rodio::Sink,
+}
+
+impl HistoryAudioPlayer {
+    fn new() -> Result<Self, String> {
+        let (stream, handle) = rodio::OutputStream::try_default().map_err(|e| e.to_string())?;
+        let sink = rodio::Sink::try_new(&handle).map_err(|e| e.to_string())?;
+        Ok(Self {
+            _stream: stream,
+            sink,
+        })
+    }
+
+    fn play_wav(&self, path: &std::path::Path) -> Result<(), String> {
+        self.sink.stop();
+        self.sink.clear();
+        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        let source = rodio::Decoder::new(std::io::BufReader::new(file))
+            .map_err(|e| format!("不支援的音訊格式：{e}"))?;
+        self.sink.append(source);
+        Ok(())
+    }
+
+    fn stop(&self) {
+        self.sink.stop();
+        self.sink.clear();
+    }
+
+    fn is_playing(&self) -> bool {
+        !self.sink.empty()
+    }
+}
+
 impl AppleShell {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::theme::install(&cc.egui_ctx);
@@ -235,6 +284,9 @@ impl AppleShell {
             exit_requested: false,
             window_hidden: false,
             settings_window_open: false,
+            history_window_open: false,
+            history_entries: Vec::new(),
+            history_player: None,
             show_api_keys: false,
             openai_key_edit: String::new(),
             xai_key_edit: String::new(),
@@ -382,6 +434,18 @@ impl AppleShell {
                 {
                     self.settings_window_open = true;
                     self.key_message = None;
+                }
+            });
+    }
+
+    fn show_history_launcher(&mut self, ctx: &egui::Context) {
+        egui::Area::new(egui::Id::new("history-launcher"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-18.0, 98.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                if crate::theme::secondary_button(ui, "歷史紀錄").clicked() {
+                    self.history_entries = history::load_all();
+                    self.history_window_open = true;
                 }
             });
     }
@@ -1047,6 +1111,160 @@ impl AppleShell {
         }
     }
 
+    fn show_history_window(&mut self, ctx: &egui::Context) {
+        if !self.history_window_open {
+            return;
+        }
+        let mut open = self.history_window_open;
+        // Collect actions from inside the UI closures to avoid borrow
+        // conflicts with `self`.
+        let mut actions: Vec<HistoryAction> = Vec::new();
+        let mut days_edit = self.app.config.history.retention_days as u32;
+
+        egui::Window::new("歷史紀錄")
+            .id(egui::Id::new("history-window"))
+            .default_size([680.0, 520.0])
+            .default_pos(ctx.screen_rect().center() - egui::vec2(340.0, 260.0))
+            .resizable(true)
+            .collapsible(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                // ---- Retention days controls ----
+                ui.horizontal(|ui| {
+                    ui.label("自動刪除超過");
+                    ui.add(
+                        egui::Slider::new(&mut days_edit, 0..=365)
+                            .text("天（0 = 永不刪除）")
+                            .clamp_to_range(true),
+                    );
+                    if days_edit > 0 && crate::theme::secondary_button(ui, "立即清理").clicked()
+                    {
+                        actions.push(HistoryAction::Cleanup(days_edit as u64));
+                    }
+                });
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                if self.history_entries.is_empty() {
+                    ui.add_space(20.0);
+                    ui.label("尚無辨識紀錄。");
+                    return;
+                }
+
+                // ---- Table ----
+                let total_height = self.history_entries.len() as f32 * 42.0 + 8.0;
+                let max_height = 380.0_f32.min(total_height);
+                egui::ScrollArea::vertical()
+                    .max_height(max_height)
+                    .show(ui, |ui| {
+                        egui::Grid::new("history-grid")
+                            .striped(true)
+                            .min_col_width(60.0)
+                            .show(ui, |ui| {
+                                // Header row
+                                ui.strong("時間");
+                                ui.strong("供應商");
+                                ui.strong("長度");
+                                ui.strong("內容預覽");
+                                ui.strong("音訊");
+                                ui.strong("");
+                                ui.end_row();
+
+                                // Show newest first
+                                let mut indices: Vec<usize> =
+                                    (0..self.history_entries.len()).collect();
+                                indices.sort_by(|&a, &b| {
+                                    self.history_entries[b]
+                                        .created_at
+                                        .partial_cmp(&self.history_entries[a].created_at)
+                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                });
+
+                                let is_playing =
+                                    self.history_player.as_ref().is_some_and(|p| p.is_playing());
+                                for &idx in &indices {
+                                    let entry = &self.history_entries[idx];
+                                    ui.label(entry.created_at.format("%m/%d %H:%M").to_string());
+                                    ui.label(&entry.provider);
+                                    ui.label(format!("{:.1}s", entry.duration_secs));
+                                    ui.label(entry.preview());
+                                    // Audio play button
+                                    if entry.audio.is_some() {
+                                        if crate::theme::secondary_button(
+                                            ui,
+                                            if is_playing { "⏹" } else { "▶" },
+                                        )
+                                        .clicked()
+                                        {
+                                            actions.push(HistoryAction::Play(entry.id.clone()));
+                                        }
+                                    } else {
+                                        ui.label("-");
+                                    }
+                                    // Delete button
+                                    if crate::theme::destructive_button(ui, "🗑")
+                                        .on_hover_text("刪除此筆紀錄")
+                                        .clicked()
+                                    {
+                                        actions.push(HistoryAction::Delete(entry.id.clone()));
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                    });
+            });
+
+        // Apply all actions outside the UI closures.
+        self.history_window_open = open;
+
+        // Apply retention days edit.
+        let new_days = days_edit as u64;
+        self.app.config.history.retention_days = new_days;
+
+        for action in actions {
+            match action {
+                HistoryAction::Cleanup(days) => {
+                    match history::cleanup_older_than(days) {
+                        Ok(count) => {
+                            let msg = if count > 0 {
+                                format!("已清理 {count} 筆過期歷史紀錄")
+                            } else {
+                                "無過期歷史紀錄".to_string()
+                            };
+                            self.app.last_error = Some(msg);
+                        }
+                        Err(error) => {
+                            self.app.last_error = Some(format!("清理失敗：{error}"));
+                        }
+                    }
+                    self.history_entries = history::load_all();
+                }
+                HistoryAction::Delete(id) => {
+                    if let Err(error) = history::delete_entry(&id) {
+                        self.app.last_error = Some(error);
+                    }
+                    self.history_entries = history::load_all();
+                }
+                HistoryAction::Play(id) => {
+                    let path = history::audio_path(&id);
+                    if path.exists() {
+                        if self.history_player.is_none() {
+                            self.history_player = HistoryAudioPlayer::new().ok();
+                        }
+                        if let Some(player) = &self.history_player {
+                            if player.is_playing() {
+                                player.stop();
+                            } else {
+                                let _ = player.play_wav(&path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn apply_key_action(&mut self, action: KeyAction) {
         let (provider_name, env_name, key_value) = match action {
             KeyAction::Save(ProviderKey::OpenAi) => (
@@ -1130,8 +1348,10 @@ impl eframe::App for AppleShell {
         self.poll_model_fetch();
         eframe::App::update(&mut self.app, ctx, frame);
         self.show_settings_launcher(ctx);
+        self.show_history_launcher(ctx);
         self.show_update_launcher(ctx);
         self.show_settings_window(ctx);
+        self.show_history_window(ctx);
         self.show_update_window(ctx);
         self.show_window_controls(ctx);
     }

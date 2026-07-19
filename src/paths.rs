@@ -18,7 +18,11 @@ pub fn config_path() -> PathBuf {
 }
 
 pub fn history_path() -> PathBuf {
-    data_dir().join("history.jsonl")
+    data_dir().join("history").join("entries.jsonl")
+}
+
+pub fn history_audio_dir() -> PathBuf {
+    data_dir().join("history").join("audio")
 }
 
 pub fn recordings_dir() -> PathBuf {
