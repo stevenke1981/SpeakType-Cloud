@@ -1,5 +1,7 @@
 use crate::config::AppConfig;
 use crate::error::{AppError, AppResult};
+#[cfg(target_os = "windows")]
+use crate::win_util::wide;
 
 trait SecretStore {
     fn read_secret(&self, env_name: &str) -> AppResult<Option<String>>;
@@ -287,17 +289,6 @@ fn read_user_environment(env_name: &str) -> AppResult<Option<String>> {
     String::from_utf16(&data)
         .map(Some)
         .map_err(|error| AppError::Io(format!("環境變數 {env_name} 不是有效的 Unicode：{error}")))
-}
-
-#[cfg(target_os = "windows")]
-fn wide(value: &str) -> Vec<u16> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-
-    OsStr::new(value)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
 }
 
 #[cfg(target_os = "windows")]

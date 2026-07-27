@@ -1,5 +1,7 @@
 use crate::config::AppConfig;
 use crate::error::{AppError, AppResult};
+#[cfg(target_os = "windows")]
+use crate::win_util::wide;
 use std::path::Path;
 
 const RUN_VALUE_NAME: &str = "SpeakType Cloud";
@@ -127,17 +129,6 @@ fn set_windows_launch_at_login(enabled: bool) -> AppResult<()> {
             if enabled { "啟用" } else { "停用" }
         )))
     }
-}
-
-#[cfg(target_os = "windows")]
-fn wide(value: &str) -> Vec<u16> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-
-    OsStr::new(value)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
 }
 
 #[cfg(test)]

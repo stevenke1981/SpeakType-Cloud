@@ -396,7 +396,10 @@ impl Recorder {
         self.stream.take();
         let mut guard = match self.buffer.lock() {
             Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
+            Err(poisoned) => {
+                eprintln!("warning: Recorder buffer mutex was poisoned; recovering");
+                poisoned.into_inner()
+            }
         };
         let mut samples = guard.take_ordered();
         normalize(&mut samples);

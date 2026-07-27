@@ -505,7 +505,7 @@ impl AppleShell {
             .frame(
                 egui::Frame::none()
                     .fill(crate::theme::colors::BG_CARD)
-                    .stroke(egui::Stroke::new(1.0, crate::theme::colors::SEPARATOR))
+                    .stroke(egui::Stroke::new(1.0_f32, crate::theme::colors::SEPARATOR))
                     .inner_margin(egui::Margin::symmetric(18.0, 8.0)),
             )
             .show(ctx, |ui| {

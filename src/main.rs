@@ -15,15 +15,26 @@ mod realtime;
 mod realtime_worker;
 mod secrets;
 mod shell;
+mod single_instance;
 mod startup;
 mod theme;
 mod transcription;
 mod updater;
 mod vad;
+mod win_util;
 
 use shell::AppleShell;
+use single_instance::SingleInstance;
 
 fn main() -> eframe::Result<()> {
+    let _single_instance = match SingleInstance::acquire() {
+        Ok(instance) => Some(instance),
+        Err(error) => {
+            eprintln!("{error}");
+            return Ok(());
+        }
+    };
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("SpeakType Cloud")

@@ -1126,28 +1126,42 @@ fn should_stop_for_recording_limit(
         && elapsed >= Duration::from_secs(max_duration_secs)
 }
 
-fn realtime_settings_fingerprint(config: &AppConfig) -> String {
-    format!(
-        "{:?}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-        config.provider,
-        config.transcription_mode,
-        config.language,
-        config.openai.api_key_env,
-        config.xai.api_key_env,
-        config.openrouter.api_key_env,
-        config.openai.model,
-        config.openrouter.model,
-        config.realtime.openai_model,
-        config.realtime.openai_transcription_delay.as_api_str(),
-        config.realtime.xai_smart_turn_enabled,
-        config.realtime.xai_smart_turn_threshold,
-        config.realtime.xai_smart_turn_timeout_ms,
-        config.realtime.vad_rms_threshold,
-        config.realtime.vad_pre_roll_ms,
-        config.realtime.vad_min_speech_ms,
-        config.realtime.vad_silence_ms,
-        config.realtime.max_utterance_secs,
-    )
+fn realtime_settings_fingerprint(config: &AppConfig) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    config.provider.hash(&mut hasher);
+    config.transcription_mode.hash(&mut hasher);
+    config.language.hash(&mut hasher);
+    config.openai.api_key_env.hash(&mut hasher);
+    config.xai.api_key_env.hash(&mut hasher);
+    config.openrouter.api_key_env.hash(&mut hasher);
+    config.openai.model.hash(&mut hasher);
+    config.openrouter.model.hash(&mut hasher);
+    config.realtime.openai_model.hash(&mut hasher);
+    config
+        .realtime
+        .openai_transcription_delay
+        .as_api_str()
+        .hash(&mut hasher);
+    config.realtime.xai_smart_turn_enabled.hash(&mut hasher);
+    config
+        .realtime
+        .xai_smart_turn_threshold
+        .to_bits()
+        .hash(&mut hasher);
+    config.realtime.xai_smart_turn_timeout_ms.hash(&mut hasher);
+    config
+        .realtime
+        .vad_rms_threshold
+        .to_bits()
+        .hash(&mut hasher);
+    config.realtime.vad_pre_roll_ms.hash(&mut hasher);
+    config.realtime.vad_min_speech_ms.hash(&mut hasher);
+    config.realtime.vad_silence_ms.hash(&mut hasher);
+    config.realtime.max_utterance_secs.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn take_confirmed_batch_fallback(

@@ -85,7 +85,7 @@ pub fn install(ctx: &egui::Context) {
 
     // Selection
     style.visuals.selection.bg_fill = colors::ACCENT_BLUE;
-    style.visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    style.visuals.selection.stroke = egui::Stroke::new(1.0_f32, egui::Color32::WHITE);
 
     // Rounding
     style.visuals.window_rounding = egui::Rounding::same(14.0);
@@ -95,38 +95,40 @@ pub fn install(ctx: &egui::Context) {
     // Mark: - Widget states (noninteractive)
     style.visuals.widgets.noninteractive.bg_fill = colors::BG_CARD;
     style.visuals.widgets.noninteractive.weak_bg_fill = egui::Color32::TRANSPARENT;
-    style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, colors::BORDER);
-    style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, colors::TEXT_PRIMARY);
+    style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, colors::BORDER);
+    style.visuals.widgets.noninteractive.fg_stroke =
+        egui::Stroke::new(1.0_f32, colors::TEXT_PRIMARY);
     style.visuals.widgets.noninteractive.rounding = egui::Rounding::same(10.0);
 
     // Widget states (inactive)
     style.visuals.widgets.inactive.bg_fill = colors::BG_CARD;
     style.visuals.widgets.inactive.weak_bg_fill = colors::BG_CARD;
-    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors::BORDER);
-    style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, colors::TEXT_PRIMARY);
+    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, colors::BORDER);
+    style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, colors::TEXT_PRIMARY);
     style.visuals.widgets.inactive.rounding = egui::Rounding::same(10.0);
 
     // Widget states (hovered) — subtle elevation
     style.visuals.widgets.hovered.bg_fill = colors::FILL_SECONDARY;
     style.visuals.widgets.hovered.weak_bg_fill = colors::FILL_SECONDARY;
-    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, colors::ACCENT_BLUE_HOVER);
-    style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.5, colors::TEXT_PRIMARY);
+    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, colors::ACCENT_BLUE_HOVER);
+    style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.5_f32, colors::TEXT_PRIMARY);
     style.visuals.widgets.hovered.rounding = egui::Rounding::same(10.0);
     style.visuals.widgets.hovered.expansion = 1.0;
 
     // Widget states (active / pressed)
     style.visuals.widgets.active.bg_fill = colors::ACCENT_BLUE_PRESSED;
     style.visuals.widgets.active.weak_bg_fill = colors::ACCENT_BLUE_PRESSED;
-    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, colors::ACCENT_BLUE_PRESSED);
-    style.visuals.widgets.active.fg_stroke = egui::Stroke::new(1.5, egui::Color32::WHITE);
+    style.visuals.widgets.active.bg_stroke =
+        egui::Stroke::new(1.0_f32, colors::ACCENT_BLUE_PRESSED);
+    style.visuals.widgets.active.fg_stroke = egui::Stroke::new(1.5_f32, egui::Color32::WHITE);
     style.visuals.widgets.active.rounding = egui::Rounding::same(10.0);
     style.visuals.widgets.active.expansion = 0.0;
 
     // Widget states (open — dropdowns, etc.)
     style.visuals.widgets.open.bg_fill = colors::BG_CARD_ALT;
     style.visuals.widgets.open.weak_bg_fill = colors::BG_CARD_ALT;
-    style.visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, colors::ACCENT_BLUE);
-    style.visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, colors::TEXT_PRIMARY);
+    style.visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0_f32, colors::ACCENT_BLUE);
+    style.visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0_f32, colors::TEXT_PRIMARY);
     style.visuals.widgets.open.rounding = egui::Rounding::same(10.0);
 
     ctx.set_style(style);
@@ -138,7 +140,7 @@ pub fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add(
         egui::Button::new(label)
             .fill(colors::ACCENT_BLUE)
-            .stroke(egui::Stroke::new(1.0, colors::ACCENT_BLUE))
+            .stroke(egui::Stroke::new(1.0_f32, colors::ACCENT_BLUE))
             .rounding(egui::Rounding::same(20.0)),
     )
 }
@@ -149,7 +151,7 @@ pub fn primary_button_enabled(ui: &mut egui::Ui, enabled: bool, label: &str) -> 
         enabled,
         egui::Button::new(label)
             .fill(colors::ACCENT_BLUE)
-            .stroke(egui::Stroke::new(1.0, colors::ACCENT_BLUE))
+            .stroke(egui::Stroke::new(1.0_f32, colors::ACCENT_BLUE))
             .rounding(egui::Rounding::same(20.0)),
     )
 }
@@ -160,7 +162,7 @@ pub fn secondary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add(
         egui::Button::new(label)
             .fill(theme_bg)
-            .stroke(egui::Stroke::new(1.0, colors::BORDER))
+            .stroke(egui::Stroke::new(1.0_f32, colors::BORDER))
             .rounding(egui::Rounding::same(20.0)),
     )
 }
@@ -170,7 +172,7 @@ pub fn destructive_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add(
         egui::Button::new(label)
             .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::new(1.0, colors::RED_ERROR))
+            .stroke(egui::Stroke::new(1.0_f32, colors::RED_ERROR))
             .rounding(egui::Rounding::same(20.0)),
     )
 }
@@ -181,7 +183,7 @@ pub fn settings_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add(
         egui::Button::new(label)
             .fill(colors::ACCENT_BLUE)
-            .stroke(egui::Stroke::new(1.0, colors::ACCENT_BLUE))
+            .stroke(egui::Stroke::new(1.0_f32, colors::ACCENT_BLUE))
             .rounding(egui::Rounding::same(20.0)),
     )
 }
@@ -193,7 +195,7 @@ pub fn settings_button_enabled(ui: &mut egui::Ui, enabled: bool, label: &str) ->
         enabled,
         egui::Button::new(label)
             .fill(colors::ACCENT_BLUE)
-            .stroke(egui::Stroke::new(1.0, colors::ACCENT_BLUE))
+            .stroke(egui::Stroke::new(1.0_f32, colors::ACCENT_BLUE))
             .rounding(egui::Rounding::same(20.0)),
     )
 }
@@ -242,7 +244,7 @@ pub fn card<R>(
     egui::Frame::none()
         .fill(colors::BG_CARD)
         .rounding(egui::Rounding::same(12.0))
-        .stroke(egui::Stroke::new(1.0, colors::SEPARATOR))
+        .stroke(egui::Stroke::new(1.0_f32, colors::SEPARATOR))
         .inner_margin(egui::Margin::symmetric(16.0, 14.0))
         .show(ui, |ui| {
             ui.set_min_width((available - 32.0).max(0.0));
@@ -322,9 +324,9 @@ pub fn mode_pill(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::Respon
         egui::Color32::TRANSPARENT
     };
     let stroke = if selected {
-        egui::Stroke::new(1.0, colors::ACCENT_BLUE)
+        egui::Stroke::new(1.0_f32, colors::ACCENT_BLUE)
     } else {
-        egui::Stroke::new(1.0, colors::BORDER)
+        egui::Stroke::new(1.0_f32, colors::BORDER)
     };
     let text_color = if selected {
         egui::Color32::WHITE
@@ -349,7 +351,7 @@ pub fn toolbar_separator(ui: &mut egui::Ui) {
     painter.vline(
         rect.center().x,
         rect.top()..=rect.bottom(),
-        egui::Stroke::new(1.0, colors::SEPARATOR),
+        egui::Stroke::new(1.0_f32, colors::SEPARATOR),
     );
 }
 
