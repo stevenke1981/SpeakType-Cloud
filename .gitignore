@@ -11,3 +11,15 @@
 !.env.example
 .DS_Store
 Thumbs.db
+
+# Local agent state (already tracked files are not removed by these rules).
+/.opencode/memory.db*
+/.opencode/memory/
+/.opencode/status-footer/
+/.opencode/tantivy/
+/.opencode/vectors.usearch
+
+# Private signing material must never be committed.
+*.pfx
+*.p12
+/signing/
