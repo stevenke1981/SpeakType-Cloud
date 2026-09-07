@@ -20,6 +20,12 @@ foreach ($file in Get-ChildItem -LiteralPath (Join-Path $root 'scripts') -Filter
 $nsi = Get-Content -LiteralPath (Join-Path $root 'installer\SpeakTypeCloud.nsi') -Raw
 foreach ($needle in @('WriteUninstaller', 'CreateShortcut', 'UninstallString', 'RequestExecutionLevel user')) { Assert-True $nsi.Contains($needle) "NSIS template missing: $needle" }
 Assert-True $nsi.Contains('DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "SpeakType Cloud"') 'Uninstaller must remove only the app-owned startup value'
+Assert-True $nsi.Contains('"UninstallString" "$\"$INSTDIR\Uninstall.exe$\""') 'Uninstall command must quote paths containing spaces'
+Assert-True $nsi.Contains('"QuietUninstallString" "$\"$INSTDIR\Uninstall.exe$\" /S"') 'Quiet uninstall command must quote only the executable path'
+Assert-True (-not $nsi.Contains('$"')) 'Invalid NSIS quote escapes must not be accepted'
+$installerBuilder = Get-Content -LiteralPath (Join-Path $root 'scripts\build-installer.ps1') -Raw
+Assert-True $installerBuilder.Contains('"/WX"') 'NSIS compiler warnings must fail the installer build'
+& (Join-Path $root 'scripts\build-installer.ps1') -ValidateOnly
 Assert-True (-not [regex]::IsMatch($nsi, '(?m)^SetShellVarContext\s')) 'SetShellVarContext is not valid at NSIS top level'
 Assert-True ([regex]::Matches($nsi, '(?m)^\s{2}SetShellVarContext current\r?$').Count -eq 2) 'Installer and uninstaller must use the current-user shell context'
 $workflow = Get-Content -LiteralPath (Join-Path $root '.github\workflows\windows.yml') -Raw

@@ -17,6 +17,7 @@ $templateText = Get-Content -LiteralPath $template -Raw
 foreach ($requiredDirective in @("RequestExecutionLevel user", "WriteUninstaller", "CreateShortcut", "UninstallString")) {
     if (-not $templateText.Contains($requiredDirective)) { throw "Installer template is missing: $requiredDirective" }
 }
+if ($templateText.Contains('$"')) { throw 'NSIS quote escapes must include a backslash after the dollar sign' }
 if ($ValidateOnly) {
     Write-Host "Installer template validation passed."
     return
@@ -55,8 +56,8 @@ if ([string]::IsNullOrWhiteSpace($MakensisPath) -or -not (Test-Path -LiteralPath
     throw "NSIS makensis.exe was not found. Install it with: winget install --id NSIS.NSIS -e (this script never runs the installer it builds)."
 }
 
-& $MakensisPath "/DAPP_EXE=$appExe" "/DICON_FILE=$iconFile" "/DOUT_FILE=$outputFile" "/DVERSION=$version" $template
+# Invalid command quoting must not produce a green build with a broken installer.
+& $MakensisPath "/WX" "/DAPP_EXE=$appExe" "/DICON_FILE=$iconFile" "/DOUT_FILE=$outputFile" "/DVERSION=$version" $template
 if ($LASTEXITCODE -ne 0) { throw "makensis.exe failed with exit code $LASTEXITCODE" }
 if (-not (Test-Path -LiteralPath $outputFile -PathType Leaf)) { throw "NSIS reported success but did not create: $outputFile" }
 Write-Host "Created installer (not executed): $outputFile"
-

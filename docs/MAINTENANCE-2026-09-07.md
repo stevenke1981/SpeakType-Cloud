@@ -17,13 +17,16 @@
 | 手動呼叫 manifest 腳本可為未簽章檔案產生 manifest | 腳本本身強制 Authenticode 與 signer pin 驗證。 |
 | 缺少可核對下載檔案與來源的資訊 | 增加 SHA256SUMS、來源 commit／建置模式，並沿用 SBOM 與 hash-pinned NSIS provenance。 |
 | 歷史預覽以 byte 截斷 UTF-8，混合中英文可能 panic | 改為最多 72 個 Unicode scalar values，補上中文、emoji 與邊界測試。 |
+| NSIS 解除安裝指令的引號跳脫錯誤，編譯僅警告未失敗 | 修正一般／靜默解除安裝的路徑引號，加入靜態檢查與 `/WX`，讓 NSIS 警告阻擋發行。 |
 | README 缺少一般使用者下載入口與清楚的更新條件 | 以下載、首次使用、隱私、排錯與維護操作重整，區分 GitHub 發行與 app 安裝更新。 |
 
 ## 驗證設計
 
-新增 Rust 回歸測試涵蓋缺失目標、空文字、剪貼簿變更、讀取失敗及 Unicode 歷史預覽。PowerShell 行為測試使用隔離的暫存目錄與不可執行的假資料，驗證版本／來源政策、checksum 拒絕路徑、未簽章 manifest 防護、PDB 搬移、ZIP 必要內容及打包失敗時保留舊 ZIP。
+新增 Rust 回歸測試涵蓋缺失目標、空文字、剪貼簿變更、讀取失敗及 Unicode 歷史預覽。PowerShell 行為測試使用隔離的暫存目錄與不可執行的假資料，驗證版本／來源政策、checksum 拒絕路徑、未簽章 manifest 防護、PDB 搬移、ZIP 必要內容及打包失敗時保留舊 ZIP；Release draft 的查找另覆蓋分頁、空集合與重複草稿。
 
 `scripts/check.ps1` 是一致的品質入口；自動測試與建置結果以交付 commit 的 GitHub Actions 紀錄為準。此次編輯環境沒有 Rust 或 PowerShell，因此不把本機文字／YAML 檢查宣稱成 Windows 編譯通過。真實 API、麥克風、Windows 10／11 桌面互動及付費憑證更新仍需要外部實機驗收。
+
+檢查完整 Windows 建置紀錄時，發現原本 NSIS 警告不會使 CI 失敗。因此在首次公開 Release 前取消該次主線建置，修正引號並改為警告即失敗後重新驗證；沒有用 CI 綠燈取代逐項檢視。
 
 ## 仍需留意
 
