@@ -60,7 +60,7 @@ Batch 是預設流程。Realtime／Continuous 是選用功能，不代表所有�
 
 GUI 儲存的 Key 使用 **Windows Credential Manager**，不寫入 `config.toml`。亦支援 `OPENAI_API_KEY`、`XAI_API_KEY`、`OPENROUTER_API_KEY` 環境變數；目前程序的環境值優先。建議一般使用者透過 GUI 設定，避免把真實 Key 寫進指令歷史、截圖或 Git。
 
-錄音保存預設關閉；啟動錄音後，音訊會傳送到選定供應商。設定與資料位置由 [src/paths.rs](src/paths.rs) 計算。移除程式**不會自動刪除**設定、歷史、錄音或 Credential Manager 項目；要清除 app 儲存的 Key，請先使用 GUI 的清除功能。完整說明見 [SECURITY.md](SECURITY.md)。
+**目前不是零音訊落地模式。** 一般 `save_wav` 選項預設關閉，但歷史功能是獨立路徑：Batch 在辨識前仍會嘗試將音訊寫入 `history/audio`，供歷史功能使用；關閉 `save_wav` 不代表不保存歷史音訊。啟動錄音後，音訊會傳送到選定供應商。設定與資料位置由 [src/paths.rs](src/paths.rs) 計算。移除程式**不會自動刪除**設定、歷史、錄音或 Credential Manager 項目；要清除 app 儲存的 Key，請先使用 GUI 的清除功能。完整說明見 [SECURITY.md](SECURITY.md)。
 
 ## 常見問題
 

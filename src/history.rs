@@ -46,14 +46,15 @@ impl HistoryEntry {
             .map(|name| paths::history_audio_dir().join(name))
     }
 
-    /// Short one-line preview (first 72 chars).
+    /// Short one-line preview (first 72 Unicode scalar values, not bytes).
     pub fn preview(&self) -> String {
         let line = self.text.trim().replace('\n', " ");
-        if line.len() > 72 {
-            format!("{}…", &line[..72])
-        } else {
-            line
+        let mut chars = line.chars();
+        let mut preview: String = chars.by_ref().take(72).collect();
+        if chars.next().is_some() {
+            preview.push('…');
         }
+        preview
     }
 }
 
@@ -237,7 +238,6 @@ mod tests {
         fs::write(&blocker, b"not a directory").expect("create blocker file");
         let path = blocker.join("entries.jsonl");
         let entry = make_entry(Local::now(), "preserve me");
-
         let result = append_to_path_for_test(&path, &entry);
         let _ = fs::remove_file(&blocker);
 
@@ -342,6 +342,36 @@ mod tests {
         let preview = long.preview();
         assert!(preview.ends_with('…'));
         assert_eq!(preview.chars().count(), 73); // 72 chars + '…'
+    }
+
+    #[test]
+    fn preview_preserves_short_multibyte_text() {
+        let text = "中".repeat(30);
+        assert_eq!(make_entry(Local::now(), &text).preview(), text);
+    }
+
+    #[test]
+    fn preview_truncates_mixed_utf8_at_character_boundaries() {
+        let text = format!("A{}", "中".repeat(100));
+        let expected = format!("A{}…", "中".repeat(71));
+        assert_eq!(make_entry(Local::now(), &text).preview(), expected);
+    }
+
+    #[test]
+    fn preview_handles_exact_unicode_limit_and_emoji() {
+        let exact = "😊".repeat(72);
+        assert_eq!(make_entry(Local::now(), &exact).preview(), exact);
+        let longer = "😊".repeat(73);
+        assert_eq!(
+            make_entry(Local::now(), &longer).preview(),
+            format!("{exact}…")
+        );
+    }
+
+    #[test]
+    fn preview_trims_blank_text_and_flattens_newlines() {
+        assert_eq!(make_entry(Local::now(), " \n\t ").preview(), "");
+        assert_eq!(make_entry(Local::now(), " A\nB ").preview(), "A B");
     }
 
     #[test]

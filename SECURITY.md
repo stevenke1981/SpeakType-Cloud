@@ -14,10 +14,10 @@
 
 ## 音訊與本機資料
 
-- WAV 保存預設關閉。
+- 一般 `save_wav` 選項預設關閉，但不控制歷史音訊。Batch 會在辨識前嘗試保存 `history/audio` 的 WAV；目前不能將本程式視為「音訊不落地」。
 - Batch 只有使用者主動開始的錄音區段會送往選定供應商。
 - Realtime 與 Continuous 模式預設關閉；只有使用者明確啟動 session 後才將音訊送出，停止／取消後等待 worker 確認結束。
-- 資料位置由 `src/paths.rs` 計算；錄音放在 data directory 的 `recordings`，歷史文字放在 `history/entries.jsonl`。
+- 資料位置由 `src/paths.rs` 計算；一般錄音放在 data directory 的 `recordings`，歷史音訊放在 `history/audio`，歷史文字放在 `history/entries.jsonl`。歷史音訊的 opt-in 控制與失敗工作留下音訊的清理仍需改善。
 - portable ZIP 只是免安裝發行方式，設定／歷史仍使用 Windows 使用者目錄，Key 仍使用 Credential Manager。
 - 解除安裝會保留使用者設定、歷史、錄音與 Credential Manager 項目，不應把解除安裝當成資料抹除。
 

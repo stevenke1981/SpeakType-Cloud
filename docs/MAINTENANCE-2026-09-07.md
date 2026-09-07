@@ -16,15 +16,18 @@
 | CI 只有短期 artifact，沒有 GitHub Release | 新增最小權限的發布 job、版本驗證、draft 上傳與公開前檢查。 |
 | 手動呼叫 manifest 腳本可為未簽章檔案產生 manifest | 腳本本身強制 Authenticode 與 signer pin 驗證。 |
 | 缺少可核對下載檔案與來源的資訊 | 增加 SHA256SUMS、來源 commit／建置模式，並沿用 SBOM 與 hash-pinned NSIS provenance。 |
+| 歷史預覽以 byte 截斷 UTF-8，混合中英文可能 panic | 改為最多 72 個 Unicode scalar values，補上中文、emoji 與邊界測試。 |
 | README 缺少一般使用者下載入口與清楚的更新條件 | 以下載、首次使用、隱私、排錯與維護操作重整，區分 GitHub 發行與 app 安裝更新。 |
 
 ## 驗證設計
 
-新增 Rust 回歸測試涵蓋缺失目標、空文字、剪貼簿變更及讀取失敗。PowerShell 行為測試使用隔離的暫存目錄與不可執行的假資料，驗證版本／來源政策、checksum 拒絕路徑、未簽章 manifest 防護、PDB 搬移、ZIP 必要內容及打包失敗時保留舊 ZIP。
+新增 Rust 回歸測試涵蓋缺失目標、空文字、剪貼簿變更、讀取失敗及 Unicode 歷史預覽。PowerShell 行為測試使用隔離的暫存目錄與不可執行的假資料，驗證版本／來源政策、checksum 拒絕路徑、未簽章 manifest 防護、PDB 搬移、ZIP 必要內容及打包失敗時保留舊 ZIP。
 
 `scripts/check.ps1` 是一致的品質入口；自動測試與建置結果以交付 commit 的 GitHub Actions 紀錄為準。此次編輯環境沒有 Rust 或 PowerShell，因此不把本機文字／YAML 檢查宣稱成 Windows 編譯通過。真實 API、麥克風、Windows 10／11 桌面互動及付費憑證更新仍需要外部實機驗收。
 
 ## 仍需留意
+
+核對 `spawn_batch_transcription` 後，發現一般 `save_wav` 關閉不會停用歷史音訊保存。README／SECURITY 已明確揭露 Batch 的 `history/audio` 寫入，不再宣稱音訊完全不落地。本次保留歷史功能行為；仍需統一音訊保存 opt-in、錯誤工作殘留清理與 UI 提示。
 
 剪貼簿比較與最後焦點檢查只是縮小競態窗口，不是原子交易，也不構成已收到貼上的確認。GUI 中的固定等待、HWND 重用、長時間歷史資料管理與 provider 真實環境行為仍可持續改善，不宜一次進行高風險的大範圍 UI 重構。
 

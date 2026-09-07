@@ -54,7 +54,9 @@ pub fn inject_text(
     }
     // Missing targets must not turn into "paste into whatever is focused now".
     let target = target.ok_or_else(|| {
-        AppError::Injection("未保存有效的目標視窗，已取消自動貼上；辨識文字仍可手動複製".to_string())
+        AppError::Injection(
+            "未保存有效的目標視窗，已取消自動貼上；辨識文字仍可手動複製".to_string(),
+        )
     })?;
     focus_target(target)?;
     let mut clipboard = Clipboard::new().map_err(|e| AppError::Injection(e.to_string()))?;
@@ -169,7 +171,10 @@ mod tests {
     #[test]
     fn restoration_is_allowed_only_while_injected_text_remains() {
         assert!(clipboard_can_be_restored(Some("辨識結果"), "辨識結果"));
-        assert!(!clipboard_can_be_restored(Some("剛複製的新資料"), "辨識結果"));
+        assert!(!clipboard_can_be_restored(
+            Some("剛複製的新資料"),
+            "辨識結果"
+        ));
         assert!(!clipboard_can_be_restored(Some(""), "辨識結果"));
     }
 
