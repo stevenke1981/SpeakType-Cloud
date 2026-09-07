@@ -37,7 +37,7 @@ function Read-GitHub([string]$RelativePath) {
     } -TimeoutSec 60 -MaximumRedirection 0 -SkipHttpErrorCheck
     if ($response.StatusCode -eq 404) { return $null }
     if ($response.StatusCode -ne 200) { throw "GitHub read failed with HTTP $($response.StatusCode); refusing to assume the release is absent" }
-    return ($response.Content | ConvertFrom-Json)
+    return ,($response.Content | ConvertFrom-Json -NoEnumerate)
 }
 function Invoke-Gh([string[]]$Arguments) {
     & gh @Arguments
@@ -49,7 +49,8 @@ function Write-Summary([string]$Text) {
 }
 
 $encodedTag = [Uri]::EscapeDataString($tag)
-$existing = Read-GitHub "releases/tags/$encodedTag"
+$readApi = { param($path) Read-GitHub $path }
+$existing = Find-ReleaseByTag $tag $readApi
 if ($existing -and -not $existing.draft) {
     Write-Summary "Release $tag already exists and was not modified. Bump [package].version and update Cargo.lock to publish new code. $($existing.html_url)"
     return
@@ -106,7 +107,14 @@ try {
         if ($prerelease) { $arguments += '--prerelease' }
         Invoke-Gh ($arguments + $paths)
     }
-    $uploaded = Read-GitHub "releases/tags/$encodedTag"
+    # Drafts have no published tag endpoint; tolerate brief collection replication lag.
+    $candidate = $existing
+    for ($attempt = 0; -not $candidate -and $attempt -lt 5; $attempt++) {
+        $candidate = Find-ReleaseByTag $tag $readApi
+        if (-not $candidate) { Start-Sleep -Seconds 2 }
+    }
+    if (-not $candidate) { throw 'Created draft is not visible yet; rerun this commit to resume safely' }
+    $uploaded = Read-GitHub "releases/$($candidate.id)"
     if (-not $uploaded -or -not $uploaded.draft) { throw 'Expected an unpublished draft before final verification' }
     if (@($uploaded.assets).Count -ne $files.Count) { throw 'Uploaded asset count does not match the verified local set' }
     foreach ($file in $files) {
@@ -117,7 +125,9 @@ try {
             if ($remote[0].digest -cne $expectedDigest) { throw "Remote digest mismatch: $($file.Name)" }
         }
     }
-    Invoke-Gh @('release', 'edit', $tag, '--repo', $repository, '--draft=false', "--latest=$($makeLatest.ToString().ToLowerInvariant())")
+    Invoke-Gh (@('release', 'edit', $tag, '--repo', $repository, '--draft=false', "--latest=$($makeLatest.ToString().ToLowerInvariant())"))
+    $published = Read-GitHub "releases/$($uploaded.id)"
+    if (-not $published -or $published.draft -or $published.tag_name -cne $tag) { throw 'Release publication could not be confirmed' }
     Write-Summary "Published $tag from $sourceSha. Signed=$($info.signed); Latest=$makeLatest. https://github.com/$repository/releases/tag/$tag"
 } finally {
     if (Test-Path -LiteralPath $notesPath) { Remove-Item -LiteralPath $notesPath -Force }

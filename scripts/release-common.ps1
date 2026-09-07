@@ -78,3 +78,27 @@ function Test-ReleaseChecksums([string]$Directory) {
         if (-not $listed.ContainsKey($file.Name)) { throw "Unlisted release asset: $($file.Name)" }
     }
 }
+
+# The tag endpoint returns published releases only. Draft lookup must use the
+# paginated releases collection; the reader is injectable for offline tests.
+function Find-ReleaseByTag([string]$Tag, [scriptblock]$ReadApi) {
+    $published = & $ReadApi "releases/tags/$([Uri]::EscapeDataString($Tag))"
+    if ($published) {
+        if ($published.tag_name -cne $Tag) { throw 'Release tag lookup returned a different version' }
+        return $published
+    }
+    $found = $null
+    for ($page = 1; $page -le 100; $page++) {
+        $response = & $ReadApi "releases?per_page=100&page=$page"
+        if ($null -eq $response) { throw 'Release collection is unavailable; refusing to assume absence' }
+        $batch = @($response)
+        foreach ($release in $batch) {
+            if ($release.tag_name -ceq $Tag) {
+                if ($null -ne $found) { throw 'Multiple releases use this tag; resolve the duplicate drafts manually' }
+                $found = $release
+            }
+        }
+        if ($batch.Count -lt 100) { return $found }
+    }
+    throw 'Release pagination limit reached; refusing to assume absence'
+}

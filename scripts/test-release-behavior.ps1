@@ -53,6 +53,46 @@ try {
         Assert-True ((Get-ReleaseDecision '1.2.3' 'push' 'refs/heads/main' 'main' ('a' * 64)).Signed) 'Valid pin was rejected'
         Assert-Throws { Get-ReleaseDecision '1.2.3' 'push' 'refs/heads/main' 'main' 'bad-pin' }
     }
+    Test-Case 'Draft lookup uses the release collection rather than a published tag' {
+        $found = Find-ReleaseByTag 'v1.2.3' {
+            param($path)
+            if ($path.StartsWith('releases/tags/')) { return $null }
+            return ,@([pscustomobject]@{ tag_name = 'v1.2.3'; draft = $true; id = 42 })
+        }
+        Assert-True ($found.id -eq 42 -and $found.draft) 'Draft release was not found'
+    }
+    Test-Case 'Draft lookup paginates without treating the first page as complete' {
+        $found = Find-ReleaseByTag 'v1.2.3' {
+            param($path)
+            if ($path.StartsWith('releases/tags/')) { return $null }
+            if ($path.EndsWith('page=1')) {
+                return ,@(1..100 | ForEach-Object { [pscustomobject]@{ tag_name = "v0.0.$_"; id = $_; draft = $false } })
+            }
+            return ,@([pscustomobject]@{ tag_name = 'v1.2.3'; id = 101; draft = $true })
+        }
+        Assert-True ($found.id -eq 101) 'Later-page draft was missed'
+    }
+    Test-Case 'Empty release collections differ from unavailable collections' {
+        $found = Find-ReleaseByTag 'v1.2.3' {
+            param($path)
+            if ($path.StartsWith('releases/tags/')) { return $null }
+            return ,@()
+        }
+        Assert-True ($null -eq $found) 'Empty collection unexpectedly produced a release'
+        Assert-Throws { Find-ReleaseByTag 'v1.2.3' { return $null } }
+    }
+    Test-Case 'Duplicate drafts are rejected instead of overwritten' {
+        Assert-Throws {
+            Find-ReleaseByTag 'v1.2.3' {
+                param($path)
+                if ($path.StartsWith('releases/tags/')) { return $null }
+                return ,@(
+                    [pscustomobject]@{ tag_name = 'v1.2.3'; id = 1; draft = $true },
+                    [pscustomobject]@{ tag_name = 'v1.2.3'; id = 2; draft = $true }
+                )
+            }
+        }
+    }
     $assets = Join-Path $temp 'assets'
     New-Item -ItemType Directory -Path $assets | Out-Null
     'original content' | Set-Content -LiteralPath (Join-Path $assets 'one.exe')
