@@ -1,0 +1,39 @@
+name: Stop superseded maintenance release
+on:
+  push:
+    branches: ['automation/stop-superseded-release-20260907']
+permissions:
+  contents: read
+  actions: write
+jobs:
+  stop:
+    if: github.repository == 'stevenke1981/SpeakType-Cloud'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Stop only the superseded run created during this maintenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id=34107435283
+          endpoint="repos/$GITHUB_REPOSITORY/actions/runs/$run_id"
+          run=$(gh api "$endpoint")
+          test "$(jq -r .head_sha <<< "$run")" = '3bc6e6578d25164d505a62af82de8931c0b82672'
+          test "$(jq -r .head_branch <<< "$run")" = 'main'
+          if [ "$(jq -r .status <<< "$run")" = completed ]; then
+            echo 'The superseded run has already finished; no cancellation was sent.'
+            exit 0
+          fi
+          gh run cancel "$run_id" --repo "$GITHUB_REPOSITORY"
+          for attempt in $(seq 1 30); do
+            status=$(gh api "$endpoint" --jq .status)
+            if [ "$status" = completed ]; then
+              gh api "$endpoint" --jq '{id,head_sha,status,conclusion}'
+              exit 0
+            fi
+            sleep 2
+          done
+          echo 'Cancellation was requested but is not yet confirmed.' >&2
+          exit 1
