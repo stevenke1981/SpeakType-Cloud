@@ -37,6 +37,9 @@ pub fn run(mode: RuntimeMode) -> Result<(), Box<dyn std::error::Error>> {
     let tray_result = SystemTray::new(mode);
     ui.set_tray_available(tray_result.is_ok());
     let tray_available = tray_result.is_ok();
+    if mode.is_lifecycle_diagnostic() && !tray_available {
+        return Err("Lifecycle diagnostic requires a working tray".into());
+    }
     let tray = tray_result.ok();
     let mut core = SpeakTypeCloudApp::new(mode);
     if !mode.is_demo() {
@@ -49,6 +52,7 @@ pub fn run(mode: RuntimeMode) -> Result<(), Box<dyn std::error::Error>> {
         std::iter::once("系統預設麥克風".into()).chain(core.devices.clone()),
     ));
     ui.set_demo(mode.is_demo());
+    ui.set_lifecycle_diagnostic(mode.is_lifecycle_diagnostic());
     ui.set_version(env!("CARGO_PKG_VERSION").into());
     let app = Rc::new(RefCell::new(core));
     let services = Rc::new(RefCell::new(services::Services::new(mode)));
@@ -198,15 +202,29 @@ pub fn run(mode: RuntimeMode) -> Result<(), Box<dyn std::error::Error>> {
     ui.on_reject_style(move || controller.borrow_mut().style_suggestion = None);
     let controller = app.clone();
     let service = services.clone();
+    let weak = ui.as_weak();
     ui.on_exit_app(move || {
-        service.borrow_mut().shutdown();
-        controller.borrow_mut().shutdown();
+        if let Some(ui) = weak.upgrade() {
+            apply_window_action(
+                TrayAction::Exit,
+                &ui,
+                &mut controller.borrow_mut(),
+                &mut service.borrow_mut(),
+            );
+        }
     });
     let weak = ui.as_weak();
+    let controller = app.clone();
+    let service = services.clone();
     ui.on_hide_window(move || {
         if tray_available {
             if let Some(ui) = weak.upgrade() {
-                let _ = ui.hide();
+                apply_window_action(
+                    TrayAction::Hide,
+                    &ui,
+                    &mut controller.borrow_mut(),
+                    &mut service.borrow_mut(),
+                );
             }
         }
     });
@@ -226,6 +244,8 @@ pub fn run(mode: RuntimeMode) -> Result<(), Box<dyn std::error::Error>> {
     let mut projection = crate::preview::PreviewProjection::default();
     let mut service_revision = u64::MAX;
     let mut last_suggestions = Vec::new();
+    let diagnostic_started = std::time::Instant::now();
+    let mut diagnostic_step = 0;
     timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(40),
@@ -233,20 +253,53 @@ pub fn run(mode: RuntimeMode) -> Result<(), Box<dyn std::error::Error>> {
             let Some(ui) = weak.upgrade() else {
                 return;
             };
+            // Explicit offline diagnostic: these are the real callbacks/Slint
+            // lifecycle, not mouse events and not evidence of a tray click.
+            let diagnostic_action = if mode.is_lifecycle_diagnostic() {
+                let due = [10, 25, 40, 55, 70];
+                if diagnostic_step < due.len()
+                    && diagnostic_started.elapsed().as_secs() >= due[diagnostic_step]
+                {
+                    diagnostic_step += 1;
+                    match diagnostic_step {
+                        1 => {
+                            println!("LIFECYCLE hide-callback");
+                            ui.invoke_hide_window();
+                            None
+                        }
+                        2 | 4 => {
+                            println!("LIFECYCLE shared-tray-show");
+                            Some(TrayAction::Show)
+                        }
+                        3 => {
+                            println!("LIFECYCLE slint-close-event");
+                            if let Err(error) = ui.window().dispatch_event_with_result(
+                                slint::platform::WindowEvent::CloseRequested,
+                            ) {
+                                eprintln!("LIFECYCLE close-error: {error}");
+                            }
+                            None
+                        }
+                        _ => {
+                            println!("LIFECYCLE shared-tray-exit");
+                            Some(TrayAction::Exit)
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             let mut app = controller.borrow_mut();
             let mut service = service.borrow_mut();
             if let Some(tray) = &tray {
-                match tray.poll() {
-                    Some(TrayAction::Show) => {
-                        let _ = ui.show();
-                    }
-                    Some(TrayAction::Exit) => {
-                        service.shutdown();
-                        app.shutdown();
-                        let _ = ui.show();
-                    }
-                    None => {}
+                if let Some(action) = tray.poll() {
+                    apply_window_action(action, &ui, &mut app, &mut service);
                 }
+            }
+            if let Some(action) = diagnostic_action {
+                apply_window_action(action, &ui, &mut app, &mut service);
             }
             app.tick();
             service.poll();
@@ -356,8 +409,36 @@ pub fn run(mode: RuntimeMode) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 enum TrayAction {
+    Hide,
     Show,
     Exit,
+}
+
+fn apply_window_action(
+    action: TrayAction,
+    ui: &MainWindow,
+    app: &mut SpeakTypeCloudApp,
+    service: &mut services::Services,
+) {
+    let result = match action {
+        TrayAction::Hide => ui.hide(),
+        TrayAction::Show | TrayAction::Exit => {
+            if matches!(action, TrayAction::Exit) {
+                service.shutdown();
+                app.shutdown();
+            }
+            // Never restore only the native HWND: Slint's visibility state and
+            // renderer must be reactivated together. Also restore a minimized
+            // window and request a fresh frame after remapping its surface.
+            ui.show().map(|()| {
+                ui.window().set_minimized(false);
+                ui.window().request_redraw();
+            })
+        }
+    };
+    if let Err(error) = result {
+        app.last_error = Some(format!("視窗操作失敗：{error}"));
+    }
 }
 
 #[cfg(windows)]

@@ -4,7 +4,9 @@ use crate::error::{AppError, AppResult};
 use crate::history::{self, HistoryEntry};
 use crate::hotkey::{GlobalHotkey, HotkeyEvent};
 use crate::injector::{copy_text, inject_text, WindowTarget};
-use crate::postprocess::{format_transcript, process_transcript, DeliveryMode};
+use crate::postprocess::{
+    format_transcript, process_formatted_transcript, process_transcript, DeliveryMode,
+};
 use crate::providers::ProviderResponse;
 use crate::realtime::RealtimeEvent;
 use crate::realtime_worker::{self, RealtimeWorkerHandle, WorkerMessage};
@@ -622,6 +624,9 @@ impl SpeakTypeCloudApp {
                 }
             }
             self.realtime_rx = None;
+            // Errors may have marked owned Realtime work busy. Recompute only
+            // after its receiver and finished worker are both released.
+            self.busy = self.active_job.is_some() || self.transcription_rx.is_some();
             self.live_audio_stats = None;
             self.pending_realtime_audio = None;
             self.realtime_stop_requested = false;
@@ -726,7 +731,12 @@ impl SpeakTypeCloudApp {
             .cleanup
             .as_ref()
             .and_then(|result| result.style_suggestion.clone());
-        let (text, delivery, processing_error) = match process_transcript(
+        let process = if job.cleanup.is_some() {
+            process_formatted_transcript
+        } else {
+            process_transcript
+        };
+        let (text, delivery, processing_error) = match process(
             source,
             &accepted_config.text_processing,
             accepted_config.output.append_space,
@@ -984,7 +994,7 @@ impl SpeakTypeCloudApp {
         self.demo_recording || self.recorder.is_recording()
     }
     pub fn is_busy(&self) -> bool {
-        self.busy
+        self.busy || self.realtime_worker.is_some() || self.realtime_rx.is_some()
     }
     pub fn capture_health(&self) -> String {
         self.live_audio_stats
@@ -1018,7 +1028,7 @@ impl SpeakTypeCloudApp {
             self.demo_recording = false;
             self.recording_started = None;
             self.status = "示範擷取已取消".into();
-        } else if self.realtime_worker.is_some() {
+        } else if self.realtime_worker.is_some() || self.realtime_rx.is_some() {
             self.cancel_realtime("已取消即時聽寫");
         } else if self.recorder.is_recording() {
             let _ = self.recorder.stop();
@@ -1274,6 +1284,98 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cp4_realtime_error_releases_busy_after_stop_or_disconnect() {
+        for disconnect in [false, true] {
+            let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+            let (tx, rx) = mpsc::channel();
+            app.realtime_rx = Some(rx);
+            assert!(
+                app.is_busy(),
+                "finalization must expose Cancel even without capture"
+            );
+            app.cancel();
+            assert!(app.realtime_cancelled);
+            app.fail(AppError::Io("injected settings failure".into()));
+            app.toggle();
+            assert!(!app.is_recording());
+            if !disconnect {
+                tx.send(WorkerMessage::Stopped).expect("stop");
+            }
+            drop(tx);
+            app.poll_realtime();
+            assert!(!app.is_busy());
+            app.toggle();
+            assert!(app.is_recording());
+        }
+    }
+
+    #[test]
+    fn cp4_terminal_realtime_recomputes_error_latch() {
+        let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+        let (tx, rx) = mpsc::channel();
+        app.realtime_rx = Some(rx);
+        app.fail(AppError::Io("injected error while finalizing".into()));
+        assert!(app.busy);
+        tx.send(WorkerMessage::Stopped).expect("stop");
+        app.poll_realtime();
+        assert!(!app.busy);
+        app.toggle();
+        assert!(app.is_recording());
+    }
+
+    #[test]
+    fn cp4_formatted_cleanup_survives_preview_and_persistence() {
+        let root = std::env::current_dir()
+            .expect("workspace")
+            .join("target")
+            .join(format!("formatted-fixture-{}", history::next_id()));
+        let store = history::HistoryStore::new(root.clone());
+        let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+        app.mode = RuntimeMode::Live;
+        app.history_store = Some(store.clone());
+        app.config.history.save_text = true;
+        app.config.cleanup.enabled = true; // No clipboard/injection, even in live acceptance branch.
+        app.config.output.append_space = false;
+        app.config
+            .text_processing
+            .dictionary
+            .push(crate::config::DictionaryEntry {
+                source: "Ada".into(),
+                replacement: "Grace".into(),
+            });
+        let config = app.config.clone();
+        app.accept(
+            JobResult {
+                response: ProviderResponse {
+                    text: "raw dictated text".into(),
+                    provider: "mock".into(),
+                    duration_secs: None,
+                    model: None,
+                },
+                local_duration_secs: 1.0,
+                cleanup: Some(crate::cleanup::CleanupResult {
+                    text: "1. Buy milk\r\n2. Call Ada\n\nNext paragraph.\u{7}".into(),
+                    dictionary_suggestions: Vec::new(),
+                    style_suggestion: None,
+                }),
+                cleanup_error: None,
+            },
+            false,
+            &config,
+        );
+        let expected = "1. Buy milk\n2. Call Grace\n\nNext paragraph.";
+        assert_eq!(app.text(), expected);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !app.persistence_rx.is_empty() && Instant::now() < deadline {
+            app.poll_persistence();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.persistence_rx.is_empty());
+        assert_eq!(store.load().expect("stored result")[0].text, expected);
+        std::fs::remove_dir_all(root).expect("remove owned fixture");
+    }
 
     fn queue_batch_success(app: &mut SpeakTypeCloudApp) {
         let (tx, rx) = mpsc::channel();

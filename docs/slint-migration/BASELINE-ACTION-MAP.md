@@ -6,11 +6,18 @@ The opt-in offline demo does not satisfy live migration acceptance.
 
 Checkpoint 03 update: all listed destinations now have controller/adapter wiring
 in `slint_ui.rs`, `slint_settings.rs`, `slint_services.rs` and `ui/settings.slint`.
-The table below retains checkpoint 02 evidence for comparison. Current verified
+The table below retains checkpoint 02 evidence for comparison (its NOT_PORTED
+cells are historical, not current implementation status). Current verified
 native coverage is limited to offline start/stop/result/retry, equal-result draft
 replacement, provider selection, in-memory save and exit; the other actions are
 WIRED / NATIVE_NOT_RUN, not accepted parity. Gemini's model picker currently uses
 the documented compatible default plus manual model input, not a live catalog.
+
+Checkpoint 05 adds editable/validated credential environment-variable names for
+all four providers (names only, never displays values). It also verifies the
+installed Slint hide/close → shared tray Show → shared Exit lifecycle with native
+screenshots. A physical tray mouse click, live credentials, global hotkey and
+private capture/injection remain NOT_RUN. See CHECKPOINT-05.md for precise evidence.
 
 | Baseline surface/action | Existing source | Slint destination | Current evidence |
 |---|---|---|---|

@@ -45,9 +45,8 @@ fn persist_with_stores(
     launch: &impl LaunchAtLoginStore,
 ) -> AppResult<()> {
     settings.save(next)?;
-    if previous.launch_at_login == next.launch_at_login {
-        return Ok(());
-    }
+    // An explicit save repairs a missing/stale app-owned Run command after
+    // uninstall/upgrade, even when the saved preference has not changed.
     if let Err(registry_error) = launch.set_enabled(next.launch_at_login) {
         return match settings.save(previous) {
             Ok(()) => Err(registry_error),
@@ -182,6 +181,47 @@ mod tests {
             command,
             r#""C:\Program Files\SpeakType Cloud\speaktype-cloud.exe""#
         );
+    }
+
+    #[test]
+    fn cp4_explicit_save_reconciles_unchanged_startup_setting() {
+        struct CommandStore {
+            command: RefCell<Option<String>>,
+        }
+        impl LaunchAtLoginStore for CommandStore {
+            fn set_enabled(&self, enabled: bool) -> AppResult<()> {
+                *self.command.borrow_mut() = if enabled {
+                    Some(quote_executable_command(Path::new(
+                        r"C:\New App\SpeakTypeCloud.exe",
+                    ))?)
+                } else {
+                    None
+                };
+                Ok(())
+            }
+        }
+        for previous_command in [None, Some("old executable".into())] {
+            let config = AppConfig {
+                launch_at_login: true,
+                ..AppConfig::default()
+            };
+            let launch = CommandStore {
+                command: RefCell::new(previous_command),
+            };
+            persist_with_stores(&config, &config, &MemorySettingsStore::default(), &launch)
+                .expect("repair");
+            assert_eq!(
+                launch.command.borrow().as_deref(),
+                Some(r#""C:\New App\SpeakTypeCloud.exe""#)
+            );
+            let off = AppConfig {
+                launch_at_login: false,
+                ..config
+            };
+            persist_with_stores(&off, &off, &MemorySettingsStore::default(), &launch)
+                .expect("disable");
+            assert!(launch.command.borrow().is_none());
+        }
     }
 
     #[test]

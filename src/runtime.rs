@@ -4,6 +4,7 @@
 pub enum RuntimeMode {
     Live,
     Demo,
+    DemoLifecycle,
 }
 
 impl RuntimeMode {
@@ -12,12 +13,17 @@ impl RuntimeMode {
         match args.as_slice() {
             [] => Ok(Self::Live),
             [arg] if arg == "--demo" => Ok(Self::Demo),
-            _ => Err("用法：SpeakTypeCloud.exe [--demo]；示範模式不讀取金鑰、設定或歷史。".into()),
+            [arg] if arg == "--demo-lifecycle" => Ok(Self::DemoLifecycle),
+            _ => Err("用法：SpeakTypeCloud.exe [--demo | --demo-lifecycle]；示範模式不讀取金鑰、設定或歷史。".into()),
         }
     }
 
     pub fn is_demo(self) -> bool {
-        self == Self::Demo
+        self != Self::Live
+    }
+
+    pub fn is_lifecycle_diagnostic(self) -> bool {
+        self == Self::DemoLifecycle
     }
 }
 
@@ -31,5 +37,14 @@ mod tests {
         assert_eq!(RuntimeMode::parse(["--demo".into()]), Ok(RuntimeMode::Demo));
         assert!(RuntimeMode::parse(["--demo".into(), "--live".into()]).is_err());
         assert!(RuntimeMode::parse(["--demoo".into()]).is_err());
+    }
+
+    #[test]
+    fn lifecycle_diagnostics_are_explicitly_offline() {
+        let mode = RuntimeMode::parse(["--demo-lifecycle".into()]).expect("diagnostic mode");
+        assert!(mode.is_demo());
+        assert!(mode.is_lifecycle_diagnostic());
+        assert!(!RuntimeMode::Live.is_lifecycle_diagnostic());
+        assert!(RuntimeMode::parse(["--demo-lifecycle".into(), "--live".into()]).is_err());
     }
 }

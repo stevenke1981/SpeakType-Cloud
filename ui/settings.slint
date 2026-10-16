@@ -3,6 +3,7 @@ import { Button, VerticalBox, HorizontalBox, LineEdit, TextEdit, ComboBox, Check
 export struct SettingsData {
     provider: int, mode: int, language: string, prompt: string,
     openai-model: string, openai-url: string, openrouter-model: string, openrouter-url: string, xai-url: string, gemini-model: string,
+    openai-key-env: string, xai-key-env: string, openrouter-key-env: string, gemini-key-env: string,
     hotkey: string, hold: bool, launch: bool, device: int, gain: int, min-ms: int, max-secs: int,
     save-text: bool, save-audio: bool, retention: int, consent: bool,
     buffer: int, auto-paste: bool, restore-clipboard: bool, preserve-target: bool, copy-fallback: bool, append-space: bool,
@@ -68,6 +69,11 @@ export component SettingsPanel inherits Rectangle {
             Label { text: "轉錄提示（專有名詞／標點）"; }
             TextEdit { text <=> root.settings.prompt; min-height: 70px; }
             Heading { text: "API Key 與 Google 資料傳送"; }
+            Text { text: "進階：環境變數名稱（不是金鑰）。修改後先儲存設定，再操作該名稱下的金鑰；不搬移或顯示既有金鑰。"; wrap: word-wrap; color: #64748b; }
+            HorizontalBox { Label { text: "OpenAI 變數名稱"; } LineEdit { text <=> root.settings.openai-key-env; } }
+            HorizontalBox { Label { text: "xAI 變數名稱"; } LineEdit { text <=> root.settings.xai-key-env; } }
+            HorizontalBox { Label { text: "OpenRouter 變數名稱"; } LineEdit { text <=> root.settings.openrouter-key-env; } }
+            HorizontalBox { Label { text: "Gemini 變數名稱"; } LineEdit { text <=> root.settings.gemini-key-env; } }
             Text { text: "金鑰保存在 Windows 認證管理員。空白欄位不顯示已保存金鑰。"; wrap: word-wrap; color: #64748b; }
             HorizontalBox {
                 ComboBox { model: ["OpenAI", "xAI", "OpenRouter", "Google Gemini"]; current-index <=> root.key-provider; }

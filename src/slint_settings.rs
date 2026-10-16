@@ -31,6 +31,10 @@ pub fn from_config(c: &AppConfig, devices: &[String]) -> SettingsData {
         openrouter_url: c.openrouter.base_url.as_str().into(),
         xai_url: c.xai.base_url.as_str().into(),
         gemini_model: c.gemini.model.as_str().into(),
+        openai_key_env: c.openai.api_key_env.as_str().into(),
+        xai_key_env: c.xai.api_key_env.as_str().into(),
+        openrouter_key_env: c.openrouter.api_key_env.as_str().into(),
+        gemini_key_env: c.gemini.api_key_env.as_str().into(),
         hotkey: c.hotkey.as_str().into(),
         hold: c.hold_to_record,
         launch: c.launch_at_login,
@@ -145,6 +149,10 @@ pub fn apply(d: &SettingsData, previous: &AppConfig, devices: &[String]) -> AppR
     c.openrouter.base_url = d.openrouter_url.trim().into();
     c.xai.base_url = d.xai_url.trim().into();
     c.gemini.model = d.gemini_model.trim().into();
+    c.openai.api_key_env = d.openai_key_env.trim().into();
+    c.xai.api_key_env = d.xai_key_env.trim().into();
+    c.openrouter.api_key_env = d.openrouter_key_env.trim().into();
+    c.gemini.api_key_env = d.gemini_key_env.trim().into();
     c.gemini.cloud_consent = d.consent;
     c.recording.input_device_name = if d.device > 0 {
         Some(
@@ -261,6 +269,23 @@ fn pairs(text: &str) -> AppResult<Vec<(String, String)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn advanced_key_environment_names_can_be_edited_and_validated() {
+        let c = AppConfig::default();
+        let mut d = from_config(&c, &[]);
+        d.openai_key_env = "CUSTOM_OPENAI_KEY".into();
+        d.xai_key_env = "CUSTOM_XAI_KEY".into();
+        d.openrouter_key_env = "CUSTOM_ROUTER_KEY".into();
+        d.gemini_key_env = "CUSTOM_GEMINI_KEY".into();
+        let updated = apply(&d, &c, &[]).expect("valid environment names");
+        assert_eq!(updated.openai.api_key_env, "CUSTOM_OPENAI_KEY");
+        assert_eq!(updated.xai.api_key_env, "CUSTOM_XAI_KEY");
+        assert_eq!(updated.openrouter.api_key_env, "CUSTOM_ROUTER_KEY");
+        assert_eq!(updated.gemini.api_key_env, "CUSTOM_GEMINI_KEY");
+        assert_eq!(from_config(&updated, &[]).gemini_key_env, d.gemini_key_env);
+        d.gemini_key_env = "invalid-name".into();
+        assert!(apply(&d, &c, &[]).is_err());
+    }
     #[test]
     fn all_default_settings_roundtrip_without_loss() {
         let c = AppConfig::default();

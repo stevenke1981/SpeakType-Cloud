@@ -5,10 +5,11 @@ export struct HistoryRow { id: string, stamp: string, text: string, audio: bool 
 export struct SuggestionRow { source: string, replacement: string }
 component Hint inherits Text { color: #64748b; wrap: word-wrap; }
 export component MainWindow inherits Window {
-    title: root.demo ? "SpeakType Cloud · 離線示範" : "SpeakType Cloud";
+    title: root.lifecycle-diagnostic ? "SpeakType Cloud · 生命週期診斷" : root.demo ? "SpeakType Cloud · 離線示範" : "SpeakType Cloud";
     preferred-width: 1040px; preferred-height: 720px; min-width: 760px; min-height: 600px;
     background: #f4f6fa; default-font-family: "Microsoft JhengHei UI"; default-font-size: 15px;
     in property <bool> demo: true;
+    in property <bool> lifecycle-diagnostic;
     in property <bool> closing;
     in property <bool> recording; in property <bool> busy;
     in property <string> status; in property <string> error; in property <string> raw-text;
