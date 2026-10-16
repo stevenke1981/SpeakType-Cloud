@@ -28,3 +28,9 @@ negation, names, corrections and meaningful filler homographs, preference and
 dictionary suggestion confirmation. Keep original content in memory unless
 explicit text-history consent permits persistence. Existing dictionary and
 voice-command features remain release-blocking regressions to preserve.
+
+## Checkpoint 04 implementation status
+
+CL01–CL05 have explicit controls in `ui/settings.slint` and conservative instructions in the structured Gemini cleanup request. CL06 provides explicit style/tone preferences and confirmation of suggestions, not implicit training from other apps. CL07 preserves manual dictionary editing and explicit term suggestion acceptance/rejection. CL08 accepts `auto` and explicit codes; batch requests omit automatic language, and OpenAI realtime omits the auto hint. New configs default to auto; existing explicit values remain.
+
+Original/edited previews and restore are implemented. Offline corpus/parser/controller tests pass; model quality, word error rate, filler homographs and semantic fidelity with live speech remain NOT_RUN. No real Google data transmission or billing occurred. Do not claim adaptive learning from accepted user edits or full Typeless equivalence.

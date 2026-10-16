@@ -213,7 +213,7 @@ async fn run(
     let provider = build_provider(&config)?;
     let request = ProviderRequest {
         wav_bytes: wav,
-        language: Some(config.language.clone()),
+        language: config.requested_language(),
         prompt: Some(config.prompt.clone()),
     };
     let response = transcribe_with_retry(

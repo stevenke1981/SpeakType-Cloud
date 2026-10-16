@@ -9,6 +9,7 @@ export component MainWindow inherits Window {
     preferred-width: 1040px; preferred-height: 720px; min-width: 760px; min-height: 600px;
     background: #f4f6fa; default-font-family: "Microsoft JhengHei UI"; default-font-size: 15px;
     in property <bool> demo: true;
+    in property <bool> closing;
     in property <bool> recording; in property <bool> busy;
     in property <string> status; in property <string> error; in property <string> raw-text;
     in property <string> capture-health;
@@ -36,8 +37,8 @@ export component MainWindow inherits Window {
             Image { source: @image-url("icons/microphone.svg"); width: 32px; height: 32px; }
             Text { text: "SpeakType Cloud"; color: #18253d; font-size: 24px; font-weight: 700; vertical-alignment: center; }
             Rectangle { horizontal-stretch: 1; }
-            Button { text: "縮小至系統匣"; enabled: root.tray-available; clicked => { root.hide-window(); } }
-            Button { text: "退出"; clicked => { root.exit-app(); } }
+            Button { text: "縮小至系統匣"; enabled: root.tray-available; Tooltip { text: @markdown("隱藏視窗並保留系統匣圖示；從系統匣可再次顯示。"); } clicked => { root.hide-window(); } }
+            Button { text: "退出"; Tooltip { text: @markdown("取消語音工作，等待紀錄寫入完成後退出程式。"); } clicked => { root.exit-app(); } }
         }
         HorizontalBox { height: 36px;
             Button { text: "語音輸入"; clicked => { root.page = 0; } }
@@ -49,14 +50,15 @@ export component MainWindow inherits Window {
         if root.demo: Rectangle { height: 44px; background: #e8eefc; border-radius: 8px;
             Text { x: 12px; y: 7px; width: parent.width - 24px; text: "離線示範：使用合成音與固定模擬文字，不讀私人設定、不錄音、不連網、不操作其他程式。"; wrap: word-wrap; color: #285092; }
         }
-        if root.page == 0: VerticalBox { spacing: 12px;
+        if root.closing: Hint { text: "正在結束背景工作，請稍候。完成後會自動退出。"; }
+        if root.page == 0 && !root.closing: VerticalBox { spacing: 12px;
             Rectangle { height: 108px; background: white; border-radius: 12px;
                 VerticalBox { padding: 16px; spacing: 10px;
                     Text { text: root.recording ? (root.demo ? "合成音訊擷取中" : "錄音中") : root.busy ? "處理中，請稍候…" : "準備好讓想法成為文字"; color: root.recording ? #b32935 : #18253d; font-size: 19px; font-weight: 700; }
                     HorizontalBox {
-                        Button { text: root.recording ? "停止並產生預覽" : root.demo ? "開始示範" : "開始錄音"; icon: @image-url("icons/microphone.svg"); enabled: !root.busy || root.recording; clicked => { root.toggle-recording(); } }
-                        Button { text: "取消"; enabled: root.recording || root.busy; clicked => { root.cancel(); } }
-                        Button { text: "重試上一段"; enabled: !root.recording && !root.busy; clicked => { root.retry(); } }
+                        Button { text: root.recording ? "停止並產生預覽" : root.demo ? "開始示範" : "開始錄音"; icon: @image-url("icons/microphone.svg"); enabled: !root.busy || root.recording; Tooltip { text: @markdown("開始或停止本段語音輸入；停止後顯示原文與整理預覽。"); } clicked => { root.toggle-recording(); } }
+                        Button { text: "取消"; enabled: root.recording || root.busy; Tooltip { text: @markdown("取消本段，不接受仍在途中的辨識結果。"); } clicked => { root.cancel(); } }
+                        Button { text: "重試上一段"; enabled: !root.recording && !root.busy; Tooltip { text: @markdown("使用記憶體中的上一段音訊重試，可能再次產生 API 費用。"); } clicked => { root.retry(); } }
                         if root.fallback-available: Button { text: "同意改用批次上傳"; enabled: !root.busy; clicked => { root.batch-fallback(); } }
                         Rectangle { horizontal-stretch: 1; }
                     }
@@ -79,8 +81,8 @@ export component MainWindow inherits Window {
                         TextEdit { text <=> root.final-text; }
                         HorizontalBox {
                             Button { text: "還原原文"; enabled: root.raw-text != ""; clicked => { root.restore-original(); } }
-                            Button { text: root.demo ? "模擬複製" : "複製"; icon: @image-url("icons/copy.svg"); enabled: root.final-text != "" && !root.busy; clicked => { root.copy-preview(root.final-text); } }
-                            Button { text: root.demo ? "模擬貼上" : "安全貼上"; enabled: root.final-text != "" && !root.busy; clicked => { root.paste-preview(root.final-text); } }
+                            Button { text: root.demo ? "模擬複製" : "複製"; icon: @image-url("icons/copy.svg"); enabled: root.final-text != "" && !root.busy; Tooltip { text: @markdown("將目前可編輯的預覽文字複製到剪貼簿。"); } clicked => { root.copy-preview(root.final-text); } }
+                            Button { text: root.demo ? "模擬貼上" : "安全貼上"; enabled: root.final-text != "" && !root.busy; Tooltip { text: @markdown("確認目標視窗仍可用後貼上；失敗時保留文字供手動複製。"); } clicked => { root.paste-preview(root.final-text); } }
                         }
                     }
                 }
@@ -100,7 +102,7 @@ export component MainWindow inherits Window {
                 }
             }
         }
-        if root.page == 1: SettingsPanel {
+        if root.page == 1 && !root.closing: SettingsPanel {
             settings <=> root.settings; devices: root.devices; models: root.models;
             busy: root.service-busy || root.busy || root.recording; key-status: root.key-status;
             save => { root.save-settings(); } reset => { root.reset-settings(); }
@@ -109,7 +111,7 @@ export component MainWindow inherits Window {
             models-fetch(provider) => { root.fetch-models(provider); }
             model-picked(provider,model) => { root.pick-model(provider,model); }
         }
-        if root.page == 2: Rectangle { background: white; border-radius: 12px;
+        if root.page == 2 && !root.closing: Rectangle { background: white; border-radius: 12px;
             VerticalBox { padding: 16px; spacing: 12px;
                 HorizontalBox {
                     Text { text: "歷史紀錄"; font-size: 20px; font-weight: 700; color: #18253d; }
@@ -140,7 +142,7 @@ export component MainWindow inherits Window {
                 } }
             }
         }
-        if root.page == 3: Rectangle { background: white; border-radius: 12px;
+        if root.page == 3 && !root.closing: Rectangle { background: white; border-radius: 12px;
             ScrollView { VerticalBox { padding: 20px; spacing: 14px;
                 Text { text: "SpeakType Cloud " + root.version; color: #18253d; font-size: 22px; font-weight: 700; }
                 Hint { text: "Rust + Slint 桌面語音輸入。功能依提供者能力而異，尚未宣稱與 Typeless 全功能一致。"; }

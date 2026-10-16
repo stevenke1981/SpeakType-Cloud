@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 pub struct SpeakTypeCloudApp {
     mode: RuntimeMode,
+    closing: bool,
     demo_recording: bool,
     raw_text: String,
     preview_revision: u64,
@@ -151,6 +152,7 @@ impl SpeakTypeCloudApp {
         Self {
             mode,
             demo_recording: false,
+            closing: false,
             raw_text: String::new(),
             preview_revision: 0,
             dictionary_suggestions: Vec::new(),
@@ -204,7 +206,8 @@ impl SpeakTypeCloudApp {
     }
 
     fn start_recording(&mut self) {
-        if self.busy
+        if self.closing
+            || self.busy
             || self.active_job.is_some()
             || self.transcription_rx.is_some()
             || self.is_recording()
@@ -336,7 +339,8 @@ impl SpeakTypeCloudApp {
     }
 
     fn spawn_batch_transcription(&mut self, audio: RecordedAudio) {
-        if self.busy
+        if self.closing
+            || self.busy
             || self.active_job.is_some()
             || self.transcription_rx.is_some()
             || self.realtime_worker.is_some()
@@ -932,6 +936,12 @@ impl SpeakTypeCloudApp {
     }
     pub fn tick(&mut self) {
         self.poll_persistence();
+        if self.closing {
+            self.poll_transcription();
+            self.poll_realtime();
+            self.status = "正在結束背景工作，請稍候…".into();
+            return;
+        }
         if !self.mode.is_demo()
             && self.config.history.retention_days > 0
             && self
@@ -1054,10 +1064,28 @@ impl SpeakTypeCloudApp {
         }
     }
     pub fn shutdown(&mut self) {
+        if self.closing {
+            return;
+        }
+        self.closing = true;
         self.cancel();
         if let Some(active) = &self.active_job {
             active.cancellation.cancel();
         }
+    }
+
+    pub fn is_closing(&self) -> bool {
+        self.closing
+    }
+
+    pub fn shutdown_ready(&self) -> bool {
+        self.closing
+            && self.active_job.is_none()
+            && self.transcription_rx.is_none()
+            && self.realtime_worker.is_none()
+            && self.realtime_rx.is_none()
+            && self.persistence_rx.is_empty()
+            && !self.is_recording()
     }
 
     fn fail(&mut self, error: AppError) {
@@ -1440,6 +1468,24 @@ mod tests {
         assert!(!app.recorder.is_recording());
         app.cancel();
         assert!(!app.is_recording());
+    }
+
+    #[test]
+    fn shutdown_drains_owned_work_and_rejects_new_recording() {
+        let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+        queue_batch_success(&mut app);
+        let (tx, rx) = mpsc::channel();
+        app.persistence_rx.push(rx);
+        app.shutdown();
+        assert!(!app.shutdown_ready());
+        app.tick();
+        assert!(app.raw_text.is_empty());
+        assert!(!app.shutdown_ready(), "pending disk commit must finish");
+        app.toggle();
+        assert!(!app.is_recording());
+        tx.send(Ok(())).expect("complete synthetic persistence");
+        app.tick();
+        assert!(app.shutdown_ready());
     }
 
     #[test]

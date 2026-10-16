@@ -16,6 +16,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "legacy comparison tests failed with exit code $LASTEXITCODE" }
     & cargo build --release --locked
     if ($LASTEXITCODE -ne 0) { throw "cargo build --release failed with exit code $LASTEXITCODE" }
+    & (Join-Path $PSScriptRoot 'check-runtime.ps1') -Executable '.\target\release\speaktype-cloud.exe'
 } finally {
     Pop-Location
 }

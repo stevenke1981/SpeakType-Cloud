@@ -149,21 +149,25 @@ impl HistoryStore {
             .lock()
             .map_err(|_| "歷史儲存鎖定失敗".to_string())?;
         let entries = self.load_inner()?;
-        let (removed, keep): (Vec<_>, Vec<_>) = entries.into_iter().partition(predicate);
+        let (removed, keep): (Vec<_>, Vec<_>) = entries.iter().cloned().partition(predicate);
         if removed.is_empty() {
             return Ok(0);
         }
-        // A failed manifest write never removes audio belonging to existing entries.
-        self.save_inner(&keep)?;
+        // Preflight an atomic manifest write before deleting any audio. Keep all
+        // entries visible until every requested audio deletion succeeds. If the
+        // final write fails, the old rows remain retryable (missing audio is OK
+        // on retry); never hide an audio file whose deletion failed.
+        self.save_inner(&entries)?;
         for entry in &removed {
             if let Some(name) = &entry.audio {
                 match fs::remove_file(self.root.join("audio").join(name)) {
                     Ok(()) => {}
                     Err(e) if e.kind() == ErrorKind::NotFound => {}
-                    Err(e) => return Err(format!("文字索引已更新，但音訊刪除失敗：{e}")),
+                    Err(e) => return Err(format!("音訊刪除失敗；紀錄仍保留，可重試：{e}")),
                 }
             }
         }
+        self.save_inner(&keep)?;
         Ok(removed.len())
     }
 }

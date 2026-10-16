@@ -2,22 +2,23 @@
 
 ## API Key
 
-- 可從 GUI 的「API 金鑰」面板設定 OpenAI、xAI 與 OpenRouter 金鑰。
+- 可從 GUI 的「API 金鑰」面板設定 Gemini、OpenAI、xAI 與 OpenRouter 金鑰。
 - GUI 輸入預設以密碼模式遮蔽，儲存成功後會立即清空輸入欄位。
 - Windows 版將 GUI 儲存的金鑰保存於 Windows Credential Manager generic credential，目標名稱為 `SpeakTypeCloud:<環境變數名稱>`；啟動後僅載入目前程式的 process environment。
 - `config.toml` 僅保存環境變數名稱，永遠不保存 API Key 本身。
-- 仍支援外部設定 `OPENAI_API_KEY`、`XAI_API_KEY` 或 `OPENROUTER_API_KEY`；若目前 process environment 已有值，程式會優先使用該值。
+- 仍支援外部設定 `GEMINI_API_KEY`、`OPENAI_API_KEY`、`XAI_API_KEY` 或 `OPENROUTER_API_KEY`；若目前 process environment 已有值，程式會優先使用該值。
 - 舊版位於 `HKCU\Environment` 的標準金鑰只會複製匯入 Credential Manager；程式絕不刪除或改寫外部環境變數。
 - GUI 清除只移除 SpeakType Cloud 的 Credential Manager 項目與目前 process environment，不影響其他程式的永久環境設定。
-- 錯誤訊息最多保留 800 個 API response 字元，不記錄 request headers。
+- Gemini 錯誤不回顯 response body，金鑰使用敏感標記 header，不進入 URL、設定或紀錄。其他供應商沿用既有錯誤清理；不要公開含私人內容的診斷。
 - Credential Manager 將秘密限制在目前 Windows 使用者內容中；具有相同使用者權限的惡意程式仍可能存取程序記憶體或使用者憑證。
 
 ## 音訊與本機資料
 
-- 一般 `save_wav` 選項預設關閉，但不控制歷史音訊。Batch 會在辨識前嘗試保存 `history/audio` 的 WAV；目前不能將本程式視為「音訊不落地」。
+- 0.2.0 的 `history.save_text` 與 `save_recordings` 分別控制文字及音訊保存，預設 false；既有明確設定保留。取消／失敗不新增歷史，沒有辨識前的 WAV 寫入。
 - Batch 只有使用者主動開始的錄音區段會送往選定供應商。
 - Realtime 與 Continuous 模式預設關閉；只有使用者明確啟動 session 後才將音訊送出，停止／取消後等待 worker 確認結束。
-- 資料位置由 `src/paths.rs` 計算；一般錄音放在 data directory 的 `recordings`，歷史音訊放在 `history/audio`，歷史文字放在 `history/entries.jsonl`。歷史音訊的 opt-in 控制與失敗工作留下音訊的清理仍需改善。
+- 資料位置由 `src/paths.rs` 計算。已同意保存的音訊在 `history/audio`，索引在 `history/entries.jsonl`；不再新增舊 `recordings` 檔案，既有資料不自動刪除。音檔刪除若被鎖定，紀錄仍可見供重試。設定與索引採同目錄暫存檔原子替換。
+- Gemini 和文字整理需明確同意 Google 傳送；免費與付費方案規則不同，見 https://ai.google.dev/gemini-api/terms 。不承諾零留存、無人工審查或無訓練。整理後不自動貼上，原文可還原。
 - portable ZIP 只是免安裝發行方式，設定／歷史仍使用 Windows 使用者目錄，Key 仍使用 Credential Manager。
 - 解除安裝會保留使用者設定、歷史、錄音與 Credential Manager 項目，不應把解除安裝當成資料抹除。
 

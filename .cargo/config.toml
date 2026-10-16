@@ -1,0 +1,3 @@
+[target.x86_64-pc-windows-msvc]
+# Bundle the MSVC CRT into the application; Windows system/UCRT DLLs remain OS prerequisites.
+rustflags = ["-C", "target-feature=+crt-static"]

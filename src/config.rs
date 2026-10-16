@@ -3,6 +3,7 @@ use crate::paths;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::ErrorKind;
+use std::io::Write;
 
 pub const MAX_RECORDING_DURATION_SECS: u64 = 120;
 
@@ -337,7 +338,7 @@ impl Default for AppConfig {
         Self {
             provider: ProviderKind::OpenAi,
             transcription_mode: TranscriptionMode::BatchPtt,
-            language: "zh".to_string(),
+            language: "auto".to_string(),
             prompt: "使用繁體中文標點；保留專有名詞、英文縮寫與程式碼名稱。".to_string(),
             hotkey: "Ctrl+Shift+Space".to_string(),
             hold_to_record: true,
@@ -358,6 +359,14 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn requested_language(&self) -> Option<String> {
+        let value = self.language.trim();
+        if value.is_empty() || value.eq_ignore_ascii_case("auto") {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    }
     pub fn load() -> AppResult<Self> {
         let path = paths::config_path();
         match fs::read_to_string(&path) {
@@ -371,13 +380,30 @@ impl AppConfig {
     }
 
     pub fn save(&self) -> AppResult<()> {
-        let path = paths::config_path();
+        self.save_to_path(&paths::config_path())
+    }
+
+    fn save_to_path(&self, path: &std::path::Path) -> AppResult<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| AppError::Io(e.to_string()))?;
         }
         let text =
             toml::to_string_pretty(self).map_err(|e| AppError::Configuration(e.to_string()))?;
-        fs::write(path, text).map_err(|e| AppError::Io(e.to_string()))
+        let temporary = path.with_extension(format!("{}.tmp", crate::history::next_id()));
+        let result = (|| {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temporary, path)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result.map_err(|e| AppError::Io(e.to_string()))
     }
 
     pub fn api_key_env(&self) -> &str {
@@ -535,6 +561,50 @@ pub fn is_environment_variable_name(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_language_is_omitted_and_explicit_language_preserved() {
+        let mut config = AppConfig::default();
+        for value in ["", "auto", " AUTO "] {
+            config.language = value.into();
+            assert_eq!(config.requested_language(), None);
+        }
+        config.language = "ja".into();
+        assert_eq!(config.requested_language().as_deref(), Some("ja"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_settings_save_preserves_previous_file_when_replacement_is_locked() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let folder = std::env::current_dir()
+            .expect("workspace")
+            .join("target")
+            .join(format!("config-fixture-{}", crate::history::next_id()));
+        fs::create_dir_all(&folder).expect("fixture");
+        let path = folder.join("config.toml");
+        let mut config = AppConfig::default();
+        config.save_to_path(&path).expect("initial save");
+        let before = fs::read(&path).expect("read fixture");
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&path)
+            .expect("deny rename");
+        config.language = "ja".into();
+        assert!(config.save_to_path(&path).is_err());
+        drop(lock);
+        assert_eq!(fs::read(&path).expect("unchanged"), before);
+        config.save_to_path(&path).expect("retry");
+        assert_eq!(
+            parse_config(&fs::read_to_string(&path).expect("read"))
+                .expect("parse")
+                .language,
+            "ja"
+        );
+        assert_eq!(fs::read_dir(&folder).expect("list").count(), 1);
+        fs::remove_dir_all(folder).expect("remove own fixture");
+    }
 
     #[test]
     fn openai_realtime_delay_uses_only_official_enum_values() {

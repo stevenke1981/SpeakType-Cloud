@@ -1,8 +1,8 @@
 [package]
 name = "speaktype-cloud"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Windows-first cloud speech-to-text input method using OpenAI, xAI, or OpenRouter APIs"
+description = "Windows-first cloud speech-to-text input method using Slint and Gemini, OpenAI, xAI, or OpenRouter APIs"
 license = "MIT"
 
 [lints.rust]

@@ -18,6 +18,7 @@ enum ResultMessage {
 }
 pub struct Services {
     mode: RuntimeMode,
+    closing: bool,
     rx: Option<Receiver<ResultMessage>>,
     pub history: Vec<HistoryEntry>,
     pub models: Vec<String>,
@@ -33,6 +34,7 @@ impl Services {
     pub fn new(mode: RuntimeMode) -> Self {
         Self {
             mode,
+            closing: false,
             rx: None,
             history: Vec::new(),
             models: Vec::new(),
@@ -61,7 +63,7 @@ impl Services {
         self.staged.is_some()
     }
     fn start(&mut self, task: impl FnOnce() -> ResultMessage + Send + 'static) {
-        if self.busy() {
+        if self.closing || self.busy() {
             return;
         }
         let (tx, rx) = mpsc::channel();
@@ -263,6 +265,10 @@ impl Services {
     }
     pub fn stop_playback(&self) {
         self.playback_cancel.store(true, Ordering::Release);
+    }
+    pub fn shutdown(&mut self) {
+        self.closing = true;
+        self.stop_playback();
     }
     pub fn play_history(&mut self, id: &str) {
         if self.mode.is_demo() {

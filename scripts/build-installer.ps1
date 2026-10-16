@@ -1,63 +1,45 @@
+#Requires -Version 7.2
 [CmdletBinding()]
-param(
-    [string]$MakensisPath = "",
-    [switch]$SkipBuild,
-    [switch]$ValidateOnly
-)
-
-$ErrorActionPreference = "Stop"
+param([string]$IsccPath = '', [switch]$SkipBuild, [switch]$ValidateOnly, [string]$FixtureId = '')
+$ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$template = Join-Path $root "installer\SpeakTypeCloud.nsi"
-$cargoToml = Join-Path $root "Cargo.toml"
-foreach ($required in @($template, $cargoToml)) {
-    if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Required file not found: $required" }
+. (Join-Path $PSScriptRoot 'release-common.ps1')
+$template = Join-Path $root 'installer\SpeakTypeCloud.iss'
+& (Join-Path $PSScriptRoot 'test-inno-contract.ps1')
+if ($ValidateOnly) { return }
+if ($FixtureId -and $FixtureId -cnotmatch '^[a-z0-9-]{1,32}$') { throw 'Invalid isolated fixture id' }
+if (-not $SkipBuild) { & (Join-Path $PSScriptRoot 'build-release.ps1') }
+$appExe = Join-Path $root 'dist\release\SpeakTypeCloud.exe'
+if (-not (Test-Path -LiteralPath $appExe -PathType Leaf)) { throw 'Staged application is missing' }
+& (Join-Path $PSScriptRoot 'check-runtime.ps1') -Executable $appExe | Write-Host
+& (Join-Path $PSScriptRoot 'new-app-icon.ps1') -OutputPath "$root\dist\release\SpeakTypeCloud.ico"
+if (-not $IsccPath) { $IsccPath = $env:SPEAKTYPE_ISCC }
+if (-not $IsccPath) {
+    $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($command) { $IsccPath = $command.Source }
 }
-
-$templateText = Get-Content -LiteralPath $template -Raw
-foreach ($requiredDirective in @("RequestExecutionLevel user", "WriteUninstaller", "CreateShortcut", "UninstallString")) {
-    if (-not $templateText.Contains($requiredDirective)) { throw "Installer template is missing: $requiredDirective" }
+if (-not $IsccPath -or -not (Test-Path -LiteralPath $IsccPath -PathType Leaf)) {
+    throw 'Inno compiler not found. Run scripts/install-inno-build-tool.ps1 or supply -IsccPath.'
 }
-if ($templateText.Contains('$"')) { throw 'NSIS quote escapes must include a backslash after the dollar sign' }
-if ($ValidateOnly) {
-    Write-Host "Installer template validation passed."
-    return
+$compilerVersion = & $IsccPath --version
+if ($LASTEXITCODE -ne 0 -or "$compilerVersion".Trim() -ne '7.1.0') { throw 'Expected audited Inno Setup 7.1.0' }
+$version = Get-ReleaseVersion "$root\Cargo.toml"
+$output = Join-Path $root 'dist\installer'
+$name = "SpeakTypeCloud-Setup-$version"
+if ($FixtureId) { $output = Join-Path $root 'dist\installer-fixtures'; $name = "SpeakTypeCloud-Fixture-$FixtureId" }
+[IO.Directory]::CreateDirectory($output) | Out-Null
+$arguments = @('--no-ide-signtools', '--messages-jsonl', "--output-dir=$output", "--output-filename=$name",
+    "--define=AppExe=$appExe", "--define=RepoRoot=$root", "--define=Version=$version")
+if ($FixtureId) { $arguments += "--define=FixtureId=$FixtureId" }
+$messages = & $IsccPath @arguments $template 2>&1
+$code = $LASTEXITCODE
+$messages | ForEach-Object { Write-Host $_ }
+if ($code -ne 0) { throw "Inno compilation failed: $code" }
+foreach ($line in $messages) {
+    if ("$line".TrimStart().StartsWith('{')) {
+        $record = "$line" | ConvertFrom-Json -AsHashtable
+        if ($record['type'] -eq 'warning' -or $record['severity'] -eq 'warning') { throw "Inno compiler warning: $line" }
+    }
 }
-
-if (-not $SkipBuild) {
-    & (Join-Path $PSScriptRoot "build-release.ps1")
-}
-
-$appExe = Join-Path $root "dist\release\SpeakTypeCloud.exe"
-if (-not (Test-Path -LiteralPath $appExe -PathType Leaf)) {
-    throw "Release executable not found: $appExe. Run scripts\build-release.ps1 first."
-}
-$iconFile = Join-Path $root "dist\release\SpeakTypeCloud.ico"
-& (Join-Path $PSScriptRoot "new-app-icon.ps1") -OutputPath $iconFile
-
-$versionMatch = [regex]::Match((Get-Content -LiteralPath $cargoToml -Raw), '(?ms)^\[package\].*?^version\s*=\s*"([^"]+)"')
-if (-not $versionMatch.Success) { throw "Unable to read package version from Cargo.toml" }
-$version = $versionMatch.Groups[1].Value
-$outputDir = Join-Path $root "dist\installer"
-[System.IO.Directory]::CreateDirectory($outputDir) | Out-Null
-$outputFile = Join-Path $outputDir "SpeakTypeCloud-Setup-$version.exe"
-
-if ([string]::IsNullOrWhiteSpace($MakensisPath)) {
-    $command = Get-Command makensis.exe -ErrorAction SilentlyContinue
-    if ($command) { $MakensisPath = $command.Source }
-}
-if ([string]::IsNullOrWhiteSpace($MakensisPath)) {
-    $candidates = @(
-        (Join-Path $env:ProgramFiles "NSIS\makensis.exe"),
-        (Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe")
-    )
-    $MakensisPath = $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
-}
-if ([string]::IsNullOrWhiteSpace($MakensisPath) -or -not (Test-Path -LiteralPath $MakensisPath -PathType Leaf)) {
-    throw "NSIS makensis.exe was not found. Install it with: winget install --id NSIS.NSIS -e (this script never runs the installer it builds)."
-}
-
-# Invalid command quoting must not produce a green build with a broken installer.
-& $MakensisPath "/WX" "/DAPP_EXE=$appExe" "/DICON_FILE=$iconFile" "/DOUT_FILE=$outputFile" "/DVERSION=$version" $template
-if ($LASTEXITCODE -ne 0) { throw "makensis.exe failed with exit code $LASTEXITCODE" }
-if (-not (Test-Path -LiteralPath $outputFile -PathType Leaf)) { throw "NSIS reported success but did not create: $outputFile" }
-Write-Host "Created installer (not executed): $outputFile"
+if (-not (Test-Path -LiteralPath "$output\$name.exe" -PathType Leaf)) { throw 'Inno output missing' }
+Write-Host "Created installer (not executed): $output\$name.exe"

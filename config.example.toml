@@ -1,6 +1,6 @@
-provider = "open_ai" # open_ai | xai | open_router
+provider = "open_ai" # open_ai | xai | open_router | gemini
 transcription_mode = "batch_ptt" # batch_ptt | realtime_ptt | continuous_dictation
-language = "zh"
+language = "auto" # auto or explicit language code
 prompt = "使用繁體中文標點；保留專有名詞、英文縮寫與程式碼名稱。"
 hotkey = "Ctrl+Shift+Space"
 hold_to_record = true
@@ -65,8 +65,30 @@ vad_silence_ms = 700
 max_utterance_secs = 60
 
 [output]
-auto_inject = true
+auto_inject = false
+buffer_mode = "temporary"
 restore_clipboard = true
 preserve_target_window = true
 copy_only_on_injection_failure = true
 append_space = false
+
+[gemini]
+model = "gemini-3.8-flash"
+api_key_env = "GEMINI_API_KEY"
+cloud_consent = false
+
+[history]
+save_text = false
+retention_days = 0
+
+[cleanup]
+enabled = false
+fillers = true
+repetitions = true
+self_corrections = true
+formatting = true
+polish = false
+tone = "preserve"
+custom_style = ""
+suggest_terms = false
+suggest_style = false

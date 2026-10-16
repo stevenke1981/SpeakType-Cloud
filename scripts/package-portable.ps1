@@ -21,6 +21,9 @@ try {
     New-Item -ItemType Directory -Force -Path "$stage\docs" | Out-Null
     Copy-Item -LiteralPath $exe -Destination "$stage\SpeakTypeCloud.exe"
     Copy-Item -LiteralPath "$root\LICENSE" -Destination "$stage\LICENSE"
+    Copy-Item -LiteralPath "$root\THIRD_PARTY_NOTICES.md" -Destination "$stage\THIRD_PARTY_NOTICES.md"
+    New-Item -ItemType Directory -Path "$stage\licenses" | Out-Null
+    Copy-Item -LiteralPath "$root\docs\licenses\slint-royalty-free-2.0.pdf" -Destination "$stage\licenses"
     foreach ($doc in @('README.md', 'SECURITY.md', 'API_PROVIDERS.md')) {
         Copy-Item -LiteralPath (Join-Path $root $doc) -Destination "$stage\docs"
     }
@@ -33,8 +36,10 @@ try {
     }
     @'
 1. Extract the entire ZIP and run SpeakTypeCloud.exe.
-2. Save your provider API key using the API Key button in the app.
+2. Open Settings, choose your provider, and save your own API key.
+   Gemini requires explicit Google data-transfer consent; API charges may apply.
 3. Focus a text field, hold Ctrl+Shift+Space, speak, then release.
+   Review the original and processed text, then explicitly copy or paste.
 4. Configuration, history and credentials still use the Windows user profile.
    This is a no-install distribution, not a fully self-contained data profile.
 5. See docs/README.md and docs/SECURITY.md for privacy and update limitations.
@@ -49,7 +54,7 @@ try {
     $archive = [IO.Compression.ZipFile]::OpenRead($temporaryZip)
     try {
         $names = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
-        foreach ($required in @('SpeakTypeCloud.exe', 'LICENSE', 'QUICKSTART.txt', 'docs/README.md')) {
+        foreach ($required in @('SpeakTypeCloud.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'licenses/slint-royalty-free-2.0.pdf', 'QUICKSTART.txt', 'docs/README.md')) {
             if ($names -cnotcontains $required) { throw "Portable archive is missing: $required" }
         }
     } finally { $archive.Dispose() }

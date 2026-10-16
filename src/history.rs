@@ -189,6 +189,30 @@ mod tests {
         assert!(store.delete("../outside").is_err());
         assert!(!store.root.exists());
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_audio_delete_keeps_visible_retryable_entry() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let store = fixture();
+        let entry = make_entry(Local::now(), "synthetic locked recording");
+        store
+            .commit_accepted(entry.clone(), Some(&sample_audio()), true, true)
+            .expect("commit");
+        let path = store.root.join("audio").join(audio_stem(&entry.id));
+        let lock = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .expect("exclusive lock");
+        assert!(store.delete(&entry.id).is_err());
+        assert_eq!(store.load().expect("still retryable").len(), 1);
+        drop(lock);
+        store.delete(&entry.id).expect("retry after unlock");
+        assert!(store.load().expect("deleted").is_empty());
+        assert!(!path.exists());
+        fs::remove_dir_all(&store.root).expect("remove own fixture");
+    }
     #[test]
     fn concurrent_commits_and_retention_use_real_store() {
         let store = fixture();

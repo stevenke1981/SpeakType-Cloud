@@ -34,3 +34,13 @@
 ## 供應商切換
 
 設定畫面改變 `provider` 後儲存。每次辨識工作建立對應 provider；不共用 API Key，也不把 key 傳入 UI log。切換 provider 或 realtime 設定會先停止目前 session；batch fallback 必須由使用者明確確認。
+
+## Google AI Studio / Gemini (0.2.0)
+
+- Batch: `POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`; sensitive `x-goog-api-key` header, never a URL key.
+- Default `gemini-3.8-flash`; manual model names are bounded and validated. Account/model availability requires user verification.
+- Inline base64 WAV up to 8 MiB; no Files API, cached history or tools. Auto language omits an explicit language hint; preserve original and mixed languages.
+- Explicit Google data-transfer consent required. Optional cleanup sends another text request and may incur another charge. No live Google request was used in offline acceptance.
+- Redirects disabled; bounded response and timeout. STOP plus nonempty visible text required; blocked/truncated/malformed/empty results are errors. Batch transient errors have bounded retry/cancellation.
+- Gemini Realtime/Continuous is unavailable; no claim to implement Live API.
+- Official references: https://ai.google.dev/api/generate-content , https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash , https://ai.google.dev/gemini-api/terms . BYOK does not imply zero retention.

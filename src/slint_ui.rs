@@ -199,9 +199,8 @@ pub fn run(mode: RuntimeMode) -> Result<(), Box<dyn std::error::Error>> {
     let controller = app.clone();
     let service = services.clone();
     ui.on_exit_app(move || {
-        service.borrow().stop_playback();
+        service.borrow_mut().shutdown();
         controller.borrow_mut().shutdown();
-        let _ = slint::quit_event_loop();
     });
     let weak = ui.as_weak();
     ui.on_hide_window(move || {
@@ -215,9 +214,8 @@ pub fn run(mode: RuntimeMode) -> Result<(), Box<dyn std::error::Error>> {
     let service = services.clone();
     ui.window().on_close_requested(move || {
         if !tray_available {
-            service.borrow().stop_playback();
+            service.borrow_mut().shutdown();
             controller.borrow_mut().shutdown();
-            let _ = slint::quit_event_loop();
         }
         slint::CloseRequestResponse::HideWindow
     });
@@ -227,6 +225,7 @@ pub fn run(mode: RuntimeMode) -> Result<(), Box<dyn std::error::Error>> {
     let timer = slint::Timer::default();
     let mut projection = crate::preview::PreviewProjection::default();
     let mut service_revision = u64::MAX;
+    let mut last_suggestions = Vec::new();
     timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(40),
@@ -242,15 +241,20 @@ pub fn run(mode: RuntimeMode) -> Result<(), Box<dyn std::error::Error>> {
                         let _ = ui.show();
                     }
                     Some(TrayAction::Exit) => {
-                        service.stop_playback();
+                        service.shutdown();
                         app.shutdown();
-                        let _ = slint::quit_event_loop();
+                        let _ = ui.show();
                     }
                     None => {}
                 }
             }
             app.tick();
             service.poll();
+            ui.set_closing(app.is_closing());
+            if app.shutdown_ready() && !service.busy() {
+                let _ = slint::quit_event_loop();
+                return;
+            }
             ui.set_recording(app.is_recording());
             ui.set_capture_health(app.capture_health().into());
             ui.set_busy(app.is_busy());
@@ -262,18 +266,26 @@ pub fn run(mode: RuntimeMode) -> Result<(), Box<dyn std::error::Error>> {
             if let Some(text) = projection.project(app.preview_revision(), app.text()) {
                 ui.set_final_text(text.into());
             }
-            ui.set_suggestions(
-                Rc::new(VecModel::from(
-                    app.dictionary_suggestions
-                        .iter()
-                        .map(|e| generated::SuggestionRow {
-                            source: e.source.as_str().into(),
-                            replacement: e.replacement.as_str().into(),
-                        })
-                        .collect::<Vec<_>>(),
-                ))
-                .into(),
-            );
+            let suggestions: Vec<_> = app
+                .dictionary_suggestions
+                .iter()
+                .map(|e| (e.source.clone(), e.replacement.clone()))
+                .collect();
+            if suggestions != last_suggestions {
+                last_suggestions = suggestions;
+                ui.set_suggestions(
+                    Rc::new(VecModel::from(
+                        app.dictionary_suggestions
+                            .iter()
+                            .map(|e| generated::SuggestionRow {
+                                source: e.source.as_str().into(),
+                                replacement: e.replacement.as_str().into(),
+                            })
+                            .collect::<Vec<_>>(),
+                    ))
+                    .into(),
+                );
+            }
             ui.set_style_suggestion(app.style_suggestion.as_deref().unwrap_or_default().into());
             ui.set_service_busy(service.busy());
             ui.set_service_status(service.notice.as_str().into());

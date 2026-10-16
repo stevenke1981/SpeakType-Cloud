@@ -144,7 +144,9 @@ try {
     $fixture = Join-Path $temp 'fixture'
     New-Item -ItemType Directory -Force -Path "$fixture\scripts", "$fixture\target\release" | Out-Null
     foreach ($name in @('build-release.ps1', 'package-portable.ps1')) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination "$fixture\scripts" }
-    foreach ($name in @('LICENSE', 'README.md', 'SECURITY.md', 'API_PROVIDERS.md', 'config.toml', '.env')) { 'Offline fixture only.' | Set-Content -LiteralPath (Join-Path $fixture $name) }
+    New-Item -ItemType Directory -Force -Path "$fixture\docs\licenses" | Out-Null
+    'Synthetic license test fixture' | Set-Content -LiteralPath "$fixture\docs\licenses\slint-royalty-free-2.0.pdf"
+    foreach ($name in @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md', 'SECURITY.md', 'API_PROVIDERS.md', 'config.toml', '.env')) { 'Offline fixture only.' | Set-Content -LiteralPath (Join-Path $fixture $name) }
     'Not executable; packaging fixture only.' | Set-Content -LiteralPath "$fixture\target\release\speaktype-cloud.exe"
     'Debug fixture.' | Set-Content -LiteralPath "$fixture\target\release\speaktype_cloud.pdb"
     Test-Case 'SkipBuild stages the existing executable and PDB' {

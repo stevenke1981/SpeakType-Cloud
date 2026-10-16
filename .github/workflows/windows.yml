@@ -58,9 +58,9 @@ jobs:
           $pfx = Join-Path $env:RUNNER_TEMP 'SpeakTypeCloud-signing.pfx'
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_PFX_BASE64))
           .\scripts\sign-artifacts.ps1 -Path .\dist\release\SpeakTypeCloud.exe -PfxPath $pfx -PasswordEnv SIGNING_PFX_PASSWORD -ExpectedSignerCertSha256 $env:SPEAKTYPE_UPDATE_SIGNER_CERT_SHA256
-      - name: Install hash-pinned NSIS build tool
+      - name: Install hash-pinned Inno Setup build tool
         shell: pwsh
-        run: .\scripts\install-nsis-build-tool.ps1
+        run: .\scripts\install-inno-build-tool.ps1
       - name: Build installer from tested application
         shell: pwsh
         run: .\scripts\build-installer.ps1 -SkipBuild
