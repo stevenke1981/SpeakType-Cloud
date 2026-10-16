@@ -1,9 +1,10 @@
 #Requires -Version 7.2
+param([string]$TestRoot = [IO.Path]::GetTempPath())
 $ErrorActionPreference = 'Stop'
 Push-Location (Split-Path -Parent $PSScriptRoot)
 try {
     & (Join-Path $PSScriptRoot 'test-release.ps1')
-    & (Join-Path $PSScriptRoot 'test-release-behavior.ps1')
+    & (Join-Path $PSScriptRoot 'test-release-behavior.ps1') -TestRoot $TestRoot
 
     & cargo fmt --check
     if ($LASTEXITCODE -ne 0) { throw "cargo fmt --check failed with exit code $LASTEXITCODE" }

@@ -295,7 +295,7 @@ impl AppleShell {
         };
 
         Self {
-            app: SpeakTypeCloudApp::new(cc),
+            app: SpeakTypeCloudApp::new(crate::runtime::RuntimeMode::Live),
             tray,
             exit_requested: false,
             window_hidden: false,

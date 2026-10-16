@@ -30,7 +30,7 @@ Repository AGENTS, SPEC, ARCHITECTURE, SECURITY and TODOS read. Mandatory final 
 
 Rust 2021 application, egui/eframe 0.27; `main.rs` creates `shell::AppleShell`; shell owns settings, keys, history, tray, updater and embeds `app::SpeakTypeCloudApp`. `app.rs` mixes domain lifecycle and egui painting. Mature modules exist for CPAL capture/resampling/WAV, rdev hotkeys, target-aware clipboard injection, provider adapters, cancellation/retry, realtime WebSockets/VAD, postprocessing/dictionary/voice commands, credentials, startup, history and signed-update validation.
 
-No Slint in the current manifest. Installer is NSIS, not Inno Setup. Batch `spawn_batch_transcription` saves history audio before API completion regardless of `save_recordings`; SECURITY explicitly acknowledges this. History settings currently only expose retention days. Existing provider error/UI strings include visibly corrupted text in some source files; new surfaced paths must be readable Traditional Chinese.
+No Slint in the baseline manifest. Installer is NSIS, not Inno Setup. Batch `spawn_batch_transcription` saves history audio before API completion regardless of `save_recordings`; SECURITY explicitly acknowledges this. History settings currently only expose retention days. Correction at checkpoint 02: the initial terminal output appeared corrupted due to console encoding; UTF-8/codepoint inspection confirms the examined source strings are valid Traditional Chinese. No speculative source-encoding rewrite is required.
 
 ## Write scope and review entry points
 

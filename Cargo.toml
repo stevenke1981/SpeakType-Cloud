@@ -13,8 +13,9 @@ all = { level = "warn", priority = -1 }
 unwrap_used = "warn"
 
 [dependencies]
-eframe = "0.27"
-egui = "0.27"
+eframe = { version = "0.27", optional = true }
+egui = { version = "0.27", optional = true }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "accessibility"], optional = true }
 cpal = "0.15"
 crossbeam-queue = "0.3"
 rdev = "0.5"
@@ -48,6 +49,12 @@ windows-sys = { version = "0.61", features = [
 
 [build-dependencies]
 winresource = "0.1"
+slint-build = { version = "=1.18.1", optional = true }
+
+[features]
+default = ["legacy-ui"]
+slint-ui = ["dep:slint", "dep:slint-build"]
+legacy-ui = ["dep:eframe", "dep:egui"]
 
 [target.'cfg(windows)'.dependencies]
 tray-icon = { version = "0.24", default-features = false }

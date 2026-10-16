@@ -26,6 +26,8 @@ pub struct ProviderResponse {
 }
 
 #[async_trait::async_trait]
+// async-trait emits #[must_use] on its boxed Future on Rust 1.99.
+#[allow(clippy::double_must_use)]
 pub trait SpeechToTextProvider: Send + Sync {
     async fn transcribe(&self, request: ProviderRequest) -> AppResult<ProviderResponse>;
 }

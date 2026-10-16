@@ -4,6 +4,7 @@ mod app;
 mod audio;
 mod config;
 mod error;
+#[cfg(feature = "legacy-ui")]
 mod fonts;
 mod history;
 mod hotkey;
@@ -13,20 +14,53 @@ mod postprocess;
 mod providers;
 mod realtime;
 mod realtime_worker;
+mod runtime;
 mod secrets;
+#[cfg(feature = "legacy-ui")]
 mod shell;
 mod single_instance;
+#[cfg(feature = "slint-ui")]
+mod slint_ui;
 mod startup;
+#[cfg(feature = "legacy-ui")]
 mod theme;
 mod transcription;
 mod updater;
 mod vad;
 mod win_util;
 
+#[cfg(feature = "legacy-ui")]
 use shell::AppleShell;
 use single_instance::SingleInstance;
 
-fn main() -> eframe::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Parse before acquiring a mutex or reading the user's profile.
+    let mode = runtime::RuntimeMode::parse(std::env::args().skip(1))?;
+    #[cfg(feature = "slint-ui")]
+    {
+        if mode.is_demo() {
+            return slint_ui::run(mode);
+        }
+    }
+    #[cfg(feature = "legacy-ui")]
+    {
+        if mode.is_demo() {
+            return Err("Demo requires the Slint interface".into());
+        }
+        legacy_main().map_err(|error| error.to_string().into())
+    }
+    #[cfg(not(feature = "legacy-ui"))]
+    {
+        let _ = mode;
+        Err(
+            "Slint migration preview currently requires --demo; live parity is a release gate"
+                .into(),
+        )
+    }
+}
+
+#[cfg(feature = "legacy-ui")]
+fn legacy_main() -> eframe::Result<()> {
     let _single_instance = match SingleInstance::acquire() {
         Ok(instance) => Some(instance),
         Err(error) => {

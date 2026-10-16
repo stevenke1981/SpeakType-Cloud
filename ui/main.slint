@@ -1,0 +1,127 @@
+import { Button, VerticalBox, HorizontalBox, TextEdit, AboutSlint, ScrollView } from "std-widgets.slint";
+
+export component MainWindow inherits Window {
+    title: "SpeakType Cloud · 離線示範";
+    preferred-width: 1020px;
+    preferred-height: 760px;
+    min-width: 760px;
+    min-height: 620px;
+    background: #f4f6fa;
+    default-font-family: "Microsoft JhengHei UI";
+    default-font-size: 15px;
+    in property <bool> demo: true;
+    in property <bool> recording;
+    in property <bool> busy;
+    in property <string> status;
+    in property <string> error;
+    in property <string> raw-text;
+    in-out property <string> final-text;
+    in property <string> partial-text;
+    in property <bool> tray-available;
+    private property <bool> about-open: false;
+    callback toggle-recording();
+    callback cancel();
+    callback retry();
+    callback copy-preview(string);
+    callback paste-preview(string);
+    callback hide-window();
+    callback exit-app();
+
+    MenuBar {
+        Menu {
+            title: "說明";
+            MenuItem { title: "關於 Slint"; activated => { root.about-open = true; } }
+        }
+    }
+
+    VerticalBox {
+        padding: 28px;
+        spacing: 18px;
+        HorizontalBox {
+            spacing: 12px;
+            Image { source: @image-url("icons/microphone.svg"); width: 36px; height: 36px; }
+            VerticalBox {
+                spacing: 3px;
+                Text { text: "SpeakType Cloud"; color: #18253d; font-size: 26px; font-weight: 700; }
+                Text { text: "讓想法成為文字"; color: #5b687d; font-size: 14px; }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Button { text: "關於"; clicked => { root.about-open = !root.about-open; } }
+            Button { text: "縮小至系統匣"; enabled: root.tray-available; clicked => { root.hide-window(); } }
+            Button { text: "退出"; clicked => { root.exit-app(); } }
+        }
+        if root.about-open: Rectangle {
+            background: white;
+            border-radius: 10px;
+            min-height: 90px;
+            VerticalBox {
+                padding: 12px;
+                Text { text: "Rust + Slint 遷移預覽 · 尚非發行版本"; color: #18253d; }
+                AboutSlint {}
+            }
+        }
+        Rectangle {
+            background: #e8eefc;
+            border-radius: 10px;
+            min-height: 62px;
+            VerticalBox {
+                padding: 14px;
+                spacing: 4px;
+                Text { text: "離線示範模式"; font-weight: 700; color: #234d96; }
+                Text { text: "使用合成測試音與固定模擬文字。不讀私人資料、不錄音、不連網、不操作其他程式。"; wrap: word-wrap; color: #344c73; font-size: 13px; }
+            }
+        }
+        Rectangle {
+            background: white;
+            border-radius: 14px;
+            border-width: 1px;
+            border-color: #dfe5ee;
+            min-height: 130px;
+            VerticalBox {
+                padding: 20px;
+                spacing: 14px;
+                HorizontalBox {
+                    Image { source: root.recording ? @image-url("icons/record.svg") : @image-url("icons/microphone.svg"); width: 24px; height: 24px; }
+                    Text { text: root.recording ? "合成音訊擷取中" : root.busy ? "處理合成測試音" : "準備開始示範"; color: #18253d; font-size: 19px; font-weight: 600; }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text { text: "Batch · 最長 120 秒"; color: #67758c; font-size: 13px; }
+                }
+                HorizontalBox {
+                    spacing: 12px;
+                    Button { text: root.recording ? "停止並產生預覽" : "開始示範"; icon: root.recording ? @image-url("icons/stop.svg") : @image-url("icons/microphone.svg"); enabled: !root.busy; clicked => { root.toggle-recording(); } }
+                    Button { text: "取消"; enabled: root.recording || root.busy; clicked => { root.cancel(); } }
+                    Button { text: "重試示範"; enabled: !root.busy && !root.recording; clicked => { root.retry(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+        }
+        HorizontalBox {
+            spacing: 18px;
+            Rectangle {
+                background: white; border-radius: 12px; border-width: 1px; border-color: #dfe5ee;
+                VerticalBox {
+                    padding: 18px; spacing: 10px;
+                    Text { text: "轉錄原文"; color: #18253d; font-size: 17px; font-weight: 600; }
+                    Text { text: "示範結果，並非實際語音辨識"; color: #67758c; font-size: 12px; }
+                    TextEdit { text: root.raw-text; read-only: true; vertical-stretch: 1; }
+                }
+            }
+            Rectangle {
+                background: white; border-radius: 12px; border-width: 1px; border-color: #dfe5ee;
+                VerticalBox {
+                    padding: 18px; spacing: 10px;
+                    Text { text: "整理與確認"; color: #18253d; font-size: 17px; font-weight: 600; }
+                    Text { text: "可編輯文字；示範複製與貼上不改動剪貼簿"; color: #67758c; font-size: 12px; }
+                    TextEdit { text <=> root.final-text; vertical-stretch: 1; }
+                    HorizontalBox {
+                        Button { text: "模擬複製"; icon: @image-url("icons/copy.svg"); enabled: root.final-text != ""; clicked => { root.copy-preview(root.final-text); } }
+                        Button { text: "模擬貼上"; enabled: root.final-text != ""; clicked => { root.paste-preview(root.final-text); } }
+                    }
+                }
+            }
+        }
+        if root.error != "": Text { text: root.error; color: #a62c35; wrap: word-wrap; }
+        Text { text: root.status; color: #344c73; wrap: word-wrap; font-size: 13px; }
+        Text { text: "功能移植進行中：正式設定、歷史及 Gemini 尚未開放。既有功能完整移植前不發布。"; color: #67758c; wrap: word-wrap; font-size: 12px; }
+    }
+}

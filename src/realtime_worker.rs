@@ -38,25 +38,17 @@ impl RealtimeWorkerHandle {
         let _ = self.control.try_send(Control::Cancel);
     }
 
-    #[cfg(test)]
     pub fn is_finished(&self) -> bool {
         self.join
             .as_ref()
             .is_none_or(std::thread::JoinHandle::is_finished)
     }
 
-    #[cfg(test)]
     pub fn join_if_finished(&mut self) -> bool {
         if !self.is_finished() {
             return false;
         }
         self.join.take().is_none_or(|join| join.join().is_ok())
-    }
-
-    pub fn join_after_ack(&mut self) {
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
-        }
     }
 
     #[cfg(test)]

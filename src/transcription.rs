@@ -14,6 +14,68 @@ const DEFAULT_MAX_ATTEMPTS: usize = 3;
 const DEFAULT_BACKOFF: Duration = Duration::from_millis(500);
 const DEFAULT_MAX_BACKOFF: Duration = Duration::from_secs(2);
 
+/// Self-generated tone; never uses a microphone or an input file.
+pub fn synthetic_audio() -> RecordedAudio {
+    RecordedAudio {
+        samples: (0..16_000)
+            .map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / 16_000.0).sin() * 0.1)
+            .collect(),
+        sample_rate: 16_000,
+        channels: 1,
+    }
+}
+
+/// Exercises WAV encoding, the real cancellable worker and completion channel,
+/// but never constructs an HTTP provider or reads configuration/credentials.
+pub fn spawn_demo(id: JobId, audio: RecordedAudio, tx: Sender<JobMessage>) -> CancellationToken {
+    let cancellation = CancellationToken::new();
+    let worker_cancellation = cancellation.clone();
+    std::thread::spawn(move || {
+        let result = (|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| AppError::Configuration(e.to_string()))?;
+            let duration = audio.duration_secs();
+            let request = ProviderRequest {
+                wav_bytes: audio.wav_16khz_mono_i16()?,
+                language: Some("zh-TW".into()),
+                prompt: None,
+            };
+            let response = runtime.block_on(transcribe_with_retry(
+                &DemoProvider,
+                request,
+                &worker_cancellation,
+                RetryPolicy::default(),
+            ))?;
+            Ok(JobResult {
+                response,
+                local_duration_secs: duration,
+            })
+        })();
+        let _ = tx.send(JobMessage { id, result });
+    });
+    cancellation
+}
+
+struct DemoProvider;
+
+#[async_trait::async_trait]
+impl SpeechToTextProvider for DemoProvider {
+    async fn transcribe(&self, request: ProviderRequest) -> AppResult<ProviderResponse> {
+        if !request.wav_bytes.starts_with(b"RIFF") {
+            return Err(AppError::Audio("示範 WAV 格式錯誤".into()));
+        }
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        Ok(ProviderResponse {
+            text: "這是離線示範。我們在下午 3 點測試 SpeakType Cloud，不會傳送錄音。".into(),
+            duration_secs: Some(1.0),
+            provider: "離線示範（非語音辨識）".into(),
+            model: None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JobId(pub u64);
 

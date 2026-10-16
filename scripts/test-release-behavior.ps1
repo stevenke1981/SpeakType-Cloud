@@ -1,4 +1,5 @@
 #Requires -Version 7.2
+param([string]$TestRoot = [IO.Path]::GetTempPath())
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'release-common.ps1')
 $script:passed = 0
@@ -13,7 +14,9 @@ function Test-Case([string]$Name, [scriptblock]$Action) {
     $script:passed++
     Write-Host "PASS: $Name"
 }
-$temp = Join-Path ([IO.Path]::GetTempPath()) "SpeakTypeCloud-release-tests-$([Guid]::NewGuid().ToString('N'))"
+$testRootFull = [IO.Path]::GetFullPath($TestRoot)
+if (-not (Test-Path -LiteralPath $testRootFull -PathType Container)) { throw 'TestRoot must be an existing directory' }
+$temp = Join-Path $testRootFull "SpeakTypeCloud-release-tests-$([Guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $temp | Out-Null
 try {
     Test-Case 'SemVer accepts stable, prerelease and build identifiers' {
