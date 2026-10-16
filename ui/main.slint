@@ -1,127 +1,163 @@
 import { Button, VerticalBox, HorizontalBox, TextEdit, AboutSlint, ScrollView } from "std-widgets.slint";
-
+import { SettingsPanel, SettingsData } from "settings.slint";
+export { SettingsData }
+export struct HistoryRow { id: string, stamp: string, text: string, audio: bool }
+export struct SuggestionRow { source: string, replacement: string }
+component Hint inherits Text { color: #64748b; wrap: word-wrap; }
 export component MainWindow inherits Window {
-    title: "SpeakType Cloud · 離線示範";
-    preferred-width: 1020px;
-    preferred-height: 760px;
-    min-width: 760px;
-    min-height: 620px;
-    background: #f4f6fa;
-    default-font-family: "Microsoft JhengHei UI";
-    default-font-size: 15px;
+    title: root.demo ? "SpeakType Cloud · 離線示範" : "SpeakType Cloud";
+    preferred-width: 1040px; preferred-height: 720px; min-width: 760px; min-height: 600px;
+    background: #f4f6fa; default-font-family: "Microsoft JhengHei UI"; default-font-size: 15px;
     in property <bool> demo: true;
-    in property <bool> recording;
-    in property <bool> busy;
-    in property <string> status;
-    in property <string> error;
-    in property <string> raw-text;
-    in-out property <string> final-text;
-    in property <string> partial-text;
-    in property <bool> tray-available;
-    private property <bool> about-open: false;
-    callback toggle-recording();
-    callback cancel();
-    callback retry();
-    callback copy-preview(string);
-    callback paste-preview(string);
-    callback hide-window();
-    callback exit-app();
-
-    MenuBar {
-        Menu {
-            title: "說明";
-            MenuItem { title: "關於 Slint"; activated => { root.about-open = true; } }
-        }
-    }
-
-    VerticalBox {
-        padding: 28px;
-        spacing: 18px;
-        HorizontalBox {
-            spacing: 12px;
-            Image { source: @image-url("icons/microphone.svg"); width: 36px; height: 36px; }
-            VerticalBox {
-                spacing: 3px;
-                Text { text: "SpeakType Cloud"; color: #18253d; font-size: 26px; font-weight: 700; }
-                Text { text: "讓想法成為文字"; color: #5b687d; font-size: 14px; }
-            }
+    in property <bool> recording; in property <bool> busy;
+    in property <string> status; in property <string> error; in property <string> raw-text;
+    in property <string> capture-health;
+    in-out property <string> final-text; in property <string> partial-text;
+    in property <bool> tray-available; in property <bool> fallback-available;
+    in property <bool> service-busy; in property <string> service-status; in property <string> key-status;
+    in property <[string]> devices; in property <[string]> models;
+    in-out property <SettingsData> settings;
+    in property <[HistoryRow]> history; in property <[SuggestionRow]> suggestions;
+    in property <string> style-suggestion; in property <string> update-status;
+    in property <bool> update-download-ready; in property <bool> update-install-ready;
+    in property <string> version;
+    private property <int> page: 0; private property <string> pending-delete: "";
+    callback toggle-recording(); callback cancel(); callback retry();
+    callback copy-preview(string); callback paste-preview(string); callback restore-original();
+    callback hide-window(); callback exit-app(); callback batch-fallback();
+    callback save-settings(); callback reset-settings(); callback save-key(int,string); callback clear-key(int);
+    callback fetch-models(int); callback pick-model(int,string);
+    callback load-history(); callback open-history(string); callback delete-history(string); callback play-history(string); callback stop-playback(); callback cleanup-history();
+    callback accept-term(int); callback reject-term(int); callback accept-style(); callback reject-style();
+    callback check-update(); callback download-update(); callback install-update();
+    MenuBar { Menu { title: "說明"; MenuItem { title: "關於 Slint"; activated => { root.page = 3; } } } }
+    VerticalBox { padding: 20px; spacing: 12px;
+        HorizontalBox { height: 48px; spacing: 12px;
+            Image { source: @image-url("icons/microphone.svg"); width: 32px; height: 32px; }
+            Text { text: "SpeakType Cloud"; color: #18253d; font-size: 24px; font-weight: 700; vertical-alignment: center; }
             Rectangle { horizontal-stretch: 1; }
-            Button { text: "關於"; clicked => { root.about-open = !root.about-open; } }
             Button { text: "縮小至系統匣"; enabled: root.tray-available; clicked => { root.hide-window(); } }
             Button { text: "退出"; clicked => { root.exit-app(); } }
         }
-        if root.about-open: Rectangle {
-            background: white;
-            border-radius: 10px;
-            min-height: 90px;
-            VerticalBox {
-                padding: 12px;
-                Text { text: "Rust + Slint 遷移預覽 · 尚非發行版本"; color: #18253d; }
-                AboutSlint {}
-            }
+        HorizontalBox { height: 36px;
+            Button { text: "語音輸入"; clicked => { root.page = 0; } }
+            Button { text: "設定與詞典"; icon: @image-url("icons/settings.svg"); clicked => { root.page = 1; } }
+            Button { text: "歷史紀錄"; icon: @image-url("icons/history.svg"); clicked => { root.page = 2; root.load-history(); } }
+            Button { text: "說明與更新"; clicked => { root.page = 3; } }
+            Rectangle { horizontal-stretch: 1; }
         }
-        Rectangle {
-            background: #e8eefc;
-            border-radius: 10px;
-            min-height: 62px;
-            VerticalBox {
-                padding: 14px;
-                spacing: 4px;
-                Text { text: "離線示範模式"; font-weight: 700; color: #234d96; }
-                Text { text: "使用合成測試音與固定模擬文字。不讀私人資料、不錄音、不連網、不操作其他程式。"; wrap: word-wrap; color: #344c73; font-size: 13px; }
-            }
+        if root.demo: Rectangle { height: 44px; background: #e8eefc; border-radius: 8px;
+            Text { x: 12px; y: 7px; width: parent.width - 24px; text: "離線示範：使用合成音與固定模擬文字，不讀私人設定、不錄音、不連網、不操作其他程式。"; wrap: word-wrap; color: #285092; }
         }
-        Rectangle {
-            background: white;
-            border-radius: 14px;
-            border-width: 1px;
-            border-color: #dfe5ee;
-            min-height: 130px;
-            VerticalBox {
-                padding: 20px;
-                spacing: 14px;
-                HorizontalBox {
-                    Image { source: root.recording ? @image-url("icons/record.svg") : @image-url("icons/microphone.svg"); width: 24px; height: 24px; }
-                    Text { text: root.recording ? "合成音訊擷取中" : root.busy ? "處理合成測試音" : "準備開始示範"; color: #18253d; font-size: 19px; font-weight: 600; }
-                    Rectangle { horizontal-stretch: 1; }
-                    Text { text: "Batch · 最長 120 秒"; color: #67758c; font-size: 13px; }
-                }
-                HorizontalBox {
-                    spacing: 12px;
-                    Button { text: root.recording ? "停止並產生預覽" : "開始示範"; icon: root.recording ? @image-url("icons/stop.svg") : @image-url("icons/microphone.svg"); enabled: !root.busy; clicked => { root.toggle-recording(); } }
-                    Button { text: "取消"; enabled: root.recording || root.busy; clicked => { root.cancel(); } }
-                    Button { text: "重試示範"; enabled: !root.busy && !root.recording; clicked => { root.retry(); } }
-                    Rectangle { horizontal-stretch: 1; }
-                }
-            }
-        }
-        HorizontalBox {
-            spacing: 18px;
-            Rectangle {
-                background: white; border-radius: 12px; border-width: 1px; border-color: #dfe5ee;
-                VerticalBox {
-                    padding: 18px; spacing: 10px;
-                    Text { text: "轉錄原文"; color: #18253d; font-size: 17px; font-weight: 600; }
-                    Text { text: "示範結果，並非實際語音辨識"; color: #67758c; font-size: 12px; }
-                    TextEdit { text: root.raw-text; read-only: true; vertical-stretch: 1; }
-                }
-            }
-            Rectangle {
-                background: white; border-radius: 12px; border-width: 1px; border-color: #dfe5ee;
-                VerticalBox {
-                    padding: 18px; spacing: 10px;
-                    Text { text: "整理與確認"; color: #18253d; font-size: 17px; font-weight: 600; }
-                    Text { text: "可編輯文字；示範複製與貼上不改動剪貼簿"; color: #67758c; font-size: 12px; }
-                    TextEdit { text <=> root.final-text; vertical-stretch: 1; }
+        if root.page == 0: VerticalBox { spacing: 12px;
+            Rectangle { height: 108px; background: white; border-radius: 12px;
+                VerticalBox { padding: 16px; spacing: 10px;
+                    Text { text: root.recording ? (root.demo ? "合成音訊擷取中" : "錄音中") : root.busy ? "處理中，請稍候…" : "準備好讓想法成為文字"; color: root.recording ? #b32935 : #18253d; font-size: 19px; font-weight: 700; }
                     HorizontalBox {
-                        Button { text: "模擬複製"; icon: @image-url("icons/copy.svg"); enabled: root.final-text != ""; clicked => { root.copy-preview(root.final-text); } }
-                        Button { text: "模擬貼上"; enabled: root.final-text != ""; clicked => { root.paste-preview(root.final-text); } }
+                        Button { text: root.recording ? "停止並產生預覽" : root.demo ? "開始示範" : "開始錄音"; icon: @image-url("icons/microphone.svg"); enabled: !root.busy || root.recording; clicked => { root.toggle-recording(); } }
+                        Button { text: "取消"; enabled: root.recording || root.busy; clicked => { root.cancel(); } }
+                        Button { text: "重試上一段"; enabled: !root.recording && !root.busy; clicked => { root.retry(); } }
+                        if root.fallback-available: Button { text: "同意改用批次上傳"; enabled: !root.busy; clicked => { root.batch-fallback(); } }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                }
+            }
+            if root.partial-text != "": Hint { text: "即時預覽：" + root.partial-text; }
+            if root.capture-health != "": Hint { text: root.capture-health; }
+            HorizontalBox { spacing: 14px;
+                Rectangle { background: white; border-radius: 12px;
+                    VerticalBox { padding: 16px; spacing: 8px;
+                        Text { text: "轉錄原文"; font-size: 18px; font-weight: 700; color: #18253d; }
+                        Hint { text: root.demo ? "固定示範結果，並非實際語音辨識" : "保留原始轉錄，供你比較意思"; }
+                        TextEdit { text: root.raw-text; read-only: true; }
+                    }
+                }
+                Rectangle { background: white; border-radius: 12px;
+                    VerticalBox { padding: 16px; spacing: 8px;
+                        Text { text: "整理與確認"; font-size: 18px; font-weight: 700; color: #18253d; }
+                        Hint { text: "可編輯結果；確認人名、時間、數字及語意後再貼上。"; }
+                        TextEdit { text <=> root.final-text; }
+                        HorizontalBox {
+                            Button { text: "還原原文"; enabled: root.raw-text != ""; clicked => { root.restore-original(); } }
+                            Button { text: root.demo ? "模擬複製" : "複製"; icon: @image-url("icons/copy.svg"); enabled: root.final-text != "" && !root.busy; clicked => { root.copy-preview(root.final-text); } }
+                            Button { text: root.demo ? "模擬貼上" : "安全貼上"; enabled: root.final-text != "" && !root.busy; clicked => { root.paste-preview(root.final-text); } }
+                        }
+                    }
+                }
+            }
+            if root.suggestions.length > 0 || root.style-suggestion != "": ScrollView { max-height: 130px;
+                VerticalBox { spacing: 6px;
+                    for suggestion[index] in root.suggestions: HorizontalBox {
+                        Text { text: "詞典建議：" + suggestion.source + " → " + suggestion.replacement; color: #46536b; vertical-alignment: center; }
+                        Button { text: "接受"; enabled: !root.busy; clicked => { root.accept-term(index); } }
+                        Button { text: "略過"; clicked => { root.reject-term(index); } }
+                    }
+                    if root.style-suggestion != "": HorizontalBox {
+                        Hint { text: "風格建議：" + root.style-suggestion; }
+                        Button { text: "接受風格"; enabled: !root.busy; clicked => { root.accept-style(); } }
+                        Button { text: "略過"; clicked => { root.reject-style(); } }
                     }
                 }
             }
         }
-        if root.error != "": Text { text: root.error; color: #a62c35; wrap: word-wrap; }
-        Text { text: root.status; color: #344c73; wrap: word-wrap; font-size: 13px; }
-        Text { text: "功能移植進行中：正式設定、歷史及 Gemini 尚未開放。既有功能完整移植前不發布。"; color: #67758c; wrap: word-wrap; font-size: 12px; }
+        if root.page == 1: SettingsPanel {
+            settings <=> root.settings; devices: root.devices; models: root.models;
+            busy: root.service-busy || root.busy || root.recording; key-status: root.key-status;
+            save => { root.save-settings(); } reset => { root.reset-settings(); }
+            key-save(provider,key) => { root.save-key(provider,key); }
+            key-clear(provider) => { root.clear-key(provider); }
+            models-fetch(provider) => { root.fetch-models(provider); }
+            model-picked(provider,model) => { root.pick-model(provider,model); }
+        }
+        if root.page == 2: Rectangle { background: white; border-radius: 12px;
+            VerticalBox { padding: 16px; spacing: 12px;
+                HorizontalBox {
+                    Text { text: "歷史紀錄"; font-size: 20px; font-weight: 700; color: #18253d; }
+                    Rectangle { horizontal-stretch: 1; }
+                    Button { text: "重新整理"; enabled: !root.service-busy; clicked => { root.load-history(); } }
+                    Button { text: "刪除過期紀錄"; enabled: !root.service-busy; clicked => { root.cleanup-history(); } }
+                    Button { text: "停止播放"; clicked => { root.stop-playback(); } }
+                }
+                Hint { text: "保存文字與音檔分開控制；關閉後仍可管理先前紀錄。音檔播放由你明確啟動。"; }
+                if root.pending-delete != "": HorizontalBox {
+                    Text { text: "刪除這筆文字與音檔？無法復原。"; color: #b32935; }
+                    Button { text: "確認刪除"; enabled: !root.service-busy; clicked => { root.delete-history(root.pending-delete); root.pending-delete = ""; } }
+                    Button { text: "取消"; clicked => { root.pending-delete = ""; } }
+                }
+                ScrollView { VerticalBox { spacing: 10px;
+                    for row in root.history: Rectangle { height: 94px; background: #f4f6fa; border-radius: 8px;
+                        VerticalBox { padding: 10px; spacing: 6px;
+                            Hint { text: row.stamp; }
+                            HorizontalBox {
+                                Text { text: row.text; overflow: elide; color: #18253d; vertical-alignment: center; horizontal-stretch: 1; }
+                                Button { text: "開啟預覽"; clicked => { root.open-history(row.id); root.page = 0; } }
+                                Button { text: "播放"; enabled: row.audio; clicked => { root.play-history(row.id); } }
+                                Button { text: "刪除"; enabled: !root.service-busy; clicked => { root.pending-delete = row.id; } }
+                            }
+                        }
+                    }
+                    if root.history.length == 0: Hint { text: "沒有紀錄，或你尚未啟用保存。"; }
+                } }
+            }
+        }
+        if root.page == 3: Rectangle { background: white; border-radius: 12px;
+            ScrollView { VerticalBox { padding: 20px; spacing: 14px;
+                Text { text: "SpeakType Cloud " + root.version; color: #18253d; font-size: 22px; font-weight: 700; }
+                Hint { text: "Rust + Slint 桌面語音輸入。功能依提供者能力而異，尚未宣稱與 Typeless 全功能一致。"; }
+                Text { text: "軟體更新"; color: #18253d; font-size: 18px; font-weight: 700; }
+                Hint { text: root.update-status; }
+                HorizontalBox {
+                    Button { text: "檢查更新"; enabled: !root.service-busy; clicked => { root.check-update(); } }
+                    Button { text: "下載並驗證"; enabled: root.update-download-ready && !root.service-busy; clicked => { root.download-update(); } }
+                    Button { text: "確認啟動安裝精靈"; enabled: root.update-install-ready && !root.service-busy; clicked => { root.install-update(); } }
+                }
+                Hint { text: "未配置可信簽章時，自動更新維持停用。官方下載：https://github.com/stevenke1981/SpeakType-Cloud/releases"; }
+                Hint { text: "程式碼採 MIT 授權；Slint 採 Royalty-free 2.0 桌面使用條款。完整授權隨安裝包提供。"; }
+                AboutSlint { }
+            } }
+        }
+        Text { text: root.status; color: #285092; wrap: word-wrap; }
+        if root.service-status != "": Hint { text: root.service-status; }
+        if root.error != "": Text { text: root.error; color: #b32935; wrap: word-wrap; }
     }
 }

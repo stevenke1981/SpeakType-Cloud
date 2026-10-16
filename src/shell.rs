@@ -981,6 +981,12 @@ impl AppleShell {
                             ui.label("OpenRouter 僅支援 Batch / PTT 模式；選用 Realtime 模式時，設定驗證會拒絕。");
                         }
                     }
+                    crate::config::ProviderKind::Gemini => {
+                        ui.label("Gemini 模型（Batch / PTT）");
+                        ui.text_edit_singleline(&mut self.app.config.gemini.model);
+                        ui.checkbox(&mut self.app.config.gemini.cloud_consent, "同意傳送音訊至 Google Gemini；可能產生 API 費用");
+                        ui.hyperlink_to("Google 資料使用條款", "https://ai.google.dev/gemini-api/terms");
+                    }
                     crate::config::ProviderKind::Xai => {
                         ui.checkbox(
                             &mut self.app.config.xai.format_text,

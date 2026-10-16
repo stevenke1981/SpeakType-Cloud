@@ -22,6 +22,7 @@ pub fn hydrate_process_environment(config: &AppConfig) -> AppResult<()> {
             &config.openai.api_key_env,
             &config.xai.api_key_env,
             &config.openrouter.api_key_env,
+            &config.gemini.api_key_env,
         ] {
             hydrate_key_with_store(&store, env_name, legacy_migration_allowed(env_name))?;
         }

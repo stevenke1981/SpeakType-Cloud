@@ -12,31 +12,194 @@ mod generated {
     slint::include_modules!();
 }
 use generated::MainWindow;
+#[path = "slint_services.rs"]
+mod services;
+#[path = "slint_settings.rs"]
+mod settings;
+use slint::{ModelRc, SharedString, VecModel};
+fn string_model(values: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
+    Rc::new(VecModel::from(
+        values
+            .into_iter()
+            .map(SharedString::from)
+            .collect::<Vec<_>>(),
+    ))
+    .into()
+}
 
 pub fn run(mode: RuntimeMode) -> Result<(), Box<dyn std::error::Error>> {
-    if !mode.is_demo() {
-        return Err("Slint migration preview currently supports --demo only".into());
-    }
+    let _instance = if mode.is_demo() {
+        None
+    } else {
+        Some(crate::single_instance::SingleInstance::acquire()?)
+    };
     let ui = MainWindow::new()?;
-    let tray = DemoTray::new();
-    let tray_available = tray.is_ok();
-    ui.set_tray_available(tray_available);
-    let tray = tray.ok();
-    let app = Rc::new(RefCell::new(SpeakTypeCloudApp::new(mode)));
-    ui.set_demo(true);
-    ui.set_status("就緒。按「開始示範」測試完整的離線工作流程。".into());
-    let controller = app.clone();
-    ui.on_toggle_recording(move || controller.borrow_mut().toggle());
-    let controller = app.clone();
-    ui.on_cancel(move || controller.borrow_mut().cancel());
-    let controller = app.clone();
-    ui.on_retry(move || controller.borrow_mut().retry());
+    let tray_result = SystemTray::new(mode);
+    ui.set_tray_available(tray_result.is_ok());
+    let tray_available = tray_result.is_ok();
+    let tray = tray_result.ok();
+    let mut core = SpeakTypeCloudApp::new(mode);
+    if !mode.is_demo() {
+        if let Err(error) = crate::secrets::hydrate_process_environment(&core.config) {
+            core.last_error = Some(error.to_string());
+        }
+    }
+    ui.set_settings(settings::from_config(&core.config, &core.devices));
+    ui.set_devices(string_model(
+        std::iter::once("系統預設麥克風".into()).chain(core.devices.clone()),
+    ));
+    ui.set_demo(mode.is_demo());
+    ui.set_version(env!("CARGO_PKG_VERSION").into());
+    let app = Rc::new(RefCell::new(core));
+    let services = Rc::new(RefCell::new(services::Services::new(mode)));
+    macro_rules! app_action {
+        ($callback:ident,$method:ident) => {{
+            let controller = app.clone();
+            ui.$callback(move || controller.borrow_mut().$method());
+        }};
+    }
+    app_action!(on_toggle_recording, toggle);
+    app_action!(on_cancel, cancel);
+    app_action!(on_retry, retry);
+    app_action!(on_restore_original, restore_original);
+    app_action!(on_batch_fallback, confirm_batch_fallback);
     let controller = app.clone();
     ui.on_copy_preview(move |text| controller.borrow_mut().copy_preview(text.to_string()));
     let controller = app.clone();
     ui.on_paste_preview(move |text| controller.borrow_mut().paste_preview(text.to_string()));
     let controller = app.clone();
+    let weak = ui.as_weak();
+    ui.on_save_settings(move || {
+        if let Some(ui) = weak.upgrade() {
+            let mut app = controller.borrow_mut();
+            match settings::apply(&ui.get_settings(), &app.config, &app.devices) {
+                Ok(config) => {
+                    app.hotkey_edit = config.hotkey.clone();
+                    app.keyterms_edit = config.xai.keyterms.join("\n");
+                    app.config = config;
+                    app.save_settings();
+                }
+                Err(error) => app.last_error = Some(error.to_string()),
+            }
+        }
+    });
+    let controller = app.clone();
+    let weak = ui.as_weak();
+    ui.on_reset_settings(move || {
+        if let Some(ui) = weak.upgrade() {
+            let app = controller.borrow();
+            ui.set_settings(settings::from_config(&app.config, &app.devices));
+        }
+    });
+    let controller = app.clone();
+    let service = services.clone();
+    ui.on_save_key(move |index, key| {
+        service.borrow_mut().key_action(
+            controller.borrow().config.clone(),
+            settings::provider(index),
+            Some(key.to_string()),
+        )
+    });
+    let controller = app.clone();
+    let service = services.clone();
+    ui.on_clear_key(move |index| {
+        service.borrow_mut().key_action(
+            controller.borrow().config.clone(),
+            settings::provider(index),
+            None,
+        )
+    });
+    let controller = app.clone();
+    let service = services.clone();
+    ui.on_fetch_models(move |index| {
+        service.borrow_mut().fetch_models(
+            controller.borrow().config.clone(),
+            settings::provider(index),
+        )
+    });
+    let service = services.clone();
+    let weak = ui.as_weak();
+    ui.on_pick_model(move |index, model| {
+        if service.borrow().models_provider != Some(settings::provider(index)) {
+            return;
+        }
+        if let Some(ui) = weak.upgrade() {
+            let mut data = ui.get_settings();
+            match index {
+                0 => data.openai_model = model,
+                2 => data.openrouter_model = model,
+                3 => data.gemini_model = model,
+                _ => {}
+            }
+            ui.set_settings(data);
+        }
+    });
+    macro_rules! service_action {
+        ($callback:ident,$method:ident) => {{
+            let service = services.clone();
+            ui.$callback(move || service.borrow_mut().$method());
+        }};
+    }
+    service_action!(on_load_history, load_history);
+    service_action!(on_check_update, check_update);
+    service_action!(on_download_update, download_update);
+    service_action!(on_install_update, install_update);
+    service_action!(on_stop_playback, stop_playback);
+    let service = services.clone();
+    ui.on_delete_history(move |id| service.borrow_mut().delete_history(id.to_string()));
+    let service = services.clone();
+    ui.on_play_history(move |id| service.borrow_mut().play_history(&id));
+    let controller = app.clone();
+    let service = services.clone();
+    ui.on_cleanup_history(move || {
+        service
+            .borrow_mut()
+            .cleanup_history(controller.borrow().config.history.retention_days)
+    });
+    let controller = app.clone();
+    let service = services.clone();
+    ui.on_open_history(move |id| {
+        if let Some(entry) = service
+            .borrow()
+            .history
+            .iter()
+            .find(|e| e.id == id.as_str())
+        {
+            controller
+                .borrow_mut()
+                .open_history_preview(entry.text.clone());
+        }
+    });
+    let controller = app.clone();
+    let weak = ui.as_weak();
+    ui.on_accept_term(move |index| {
+        let mut app = controller.borrow_mut();
+        app.accept_dictionary_suggestion(index.max(0) as usize);
+        if let Some(ui) = weak.upgrade() {
+            ui.set_settings(settings::from_config(&app.config, &app.devices));
+        }
+    });
+    let controller = app.clone();
+    ui.on_reject_term(move |index| {
+        controller
+            .borrow_mut()
+            .reject_dictionary_suggestion(index.max(0) as usize)
+    });
+    let controller = app.clone();
+    let weak = ui.as_weak();
+    ui.on_accept_style(move || {
+        let mut app = controller.borrow_mut();
+        app.accept_style_suggestion();
+        if let Some(ui) = weak.upgrade() {
+            ui.set_settings(settings::from_config(&app.config, &app.devices));
+        }
+    });
+    let controller = app.clone();
+    ui.on_reject_style(move || controller.borrow_mut().style_suggestion = None);
+    let controller = app.clone();
+    let service = services.clone();
     ui.on_exit_app(move || {
+        service.borrow().stop_playback();
         controller.borrow_mut().shutdown();
         let _ = slint::quit_event_loop();
     });
@@ -49,8 +212,10 @@ pub fn run(mode: RuntimeMode) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let controller = app.clone();
+    let service = services.clone();
     ui.window().on_close_requested(move || {
         if !tray_available {
+            service.borrow().stop_playback();
             controller.borrow_mut().shutdown();
             let _ = slint::quit_event_loop();
         }
@@ -58,8 +223,10 @@ pub fn run(mode: RuntimeMode) -> Result<(), Box<dyn std::error::Error>> {
     });
     let weak = ui.as_weak();
     let controller = app.clone();
+    let service = services.clone();
     let timer = slint::Timer::default();
-    let mut last_text = String::new();
+    let mut projection = crate::preview::PreviewProjection::default();
+    let mut service_revision = u64::MAX;
     timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(40),
@@ -68,12 +235,14 @@ pub fn run(mode: RuntimeMode) -> Result<(), Box<dyn std::error::Error>> {
                 return;
             };
             let mut app = controller.borrow_mut();
+            let mut service = service.borrow_mut();
             if let Some(tray) = &tray {
                 match tray.poll() {
                     Some(TrayAction::Show) => {
                         let _ = ui.show();
                     }
                     Some(TrayAction::Exit) => {
+                        service.stop_playback();
                         app.shutdown();
                         let _ = slint::quit_event_loop();
                     }
@@ -81,22 +250,95 @@ pub fn run(mode: RuntimeMode) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             app.tick();
+            service.poll();
             ui.set_recording(app.is_recording());
+            ui.set_capture_health(app.capture_health().into());
             ui.set_busy(app.is_busy());
             ui.set_status(app.status().into());
             ui.set_error(app.last_error.as_deref().unwrap_or_default().into());
             ui.set_raw_text(app.raw_text().into());
             ui.set_partial_text(app.partial_text().into());
-            // Preserve edits while no new completion arrives.
-            if app.text() != last_text {
-                last_text = app.text().to_string();
-                ui.set_final_text(last_text.as_str().into());
+            ui.set_fallback_available(app.fallback_available());
+            if let Some(text) = projection.project(app.preview_revision(), app.text()) {
+                ui.set_final_text(text.into());
+            }
+            ui.set_suggestions(
+                Rc::new(VecModel::from(
+                    app.dictionary_suggestions
+                        .iter()
+                        .map(|e| generated::SuggestionRow {
+                            source: e.source.as_str().into(),
+                            replacement: e.replacement.as_str().into(),
+                        })
+                        .collect::<Vec<_>>(),
+                ))
+                .into(),
+            );
+            ui.set_style_suggestion(app.style_suggestion.as_deref().unwrap_or_default().into());
+            ui.set_service_busy(service.busy());
+            ui.set_service_status(service.notice.as_str().into());
+            ui.set_update_status(service.update_status.as_str().into());
+            ui.set_update_download_ready(service.can_download());
+            ui.set_update_install_ready(service.can_install());
+            if service_revision != service.revision {
+                service_revision = service.revision;
+                ui.set_history(
+                    Rc::new(VecModel::from(
+                        service
+                            .history
+                            .iter()
+                            .rev()
+                            .map(|e| generated::HistoryRow {
+                                id: e.id.as_str().into(),
+                                stamp: format!(
+                                    "{} · {} · {:.1} 秒",
+                                    e.created_at.format("%Y-%m-%d %H:%M"),
+                                    e.provider,
+                                    e.duration_secs
+                                )
+                                .into(),
+                                text: e.preview().into(),
+                                audio: e.audio.is_some(),
+                            })
+                            .collect::<Vec<_>>(),
+                    ))
+                    .into(),
+                );
+                ui.set_models(string_model(service.models.clone()));
+                ui.set_key_status(if mode.is_demo() {
+                    "離線示範：不讀取金鑰狀態".into()
+                } else {
+                    [
+                        crate::config::ProviderKind::OpenAi,
+                        crate::config::ProviderKind::Xai,
+                        crate::config::ProviderKind::OpenRouter,
+                        crate::config::ProviderKind::Gemini,
+                    ]
+                    .iter()
+                    .map(|provider| {
+                        let mut c = app.config.clone();
+                        c.provider = *provider;
+                        format!(
+                            "{}：{}",
+                            provider.label(),
+                            if crate::secrets::is_api_key_configured(c.api_key_env()) {
+                                "已設定"
+                            } else {
+                                "未設定"
+                            }
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("　")
+                    .into()
+                });
             }
         },
     );
     ui.show()?;
     slint::run_event_loop_until_quit()?;
     timer.stop();
+    services.borrow().stop_playback();
     app.borrow_mut().shutdown();
     Ok(())
 }
@@ -107,18 +349,18 @@ enum TrayAction {
 }
 
 #[cfg(windows)]
-struct DemoTray {
+struct SystemTray {
     icon: tray_icon::TrayIcon,
     show: tray_icon::menu::MenuId,
     exit: tray_icon::menu::MenuId,
 }
 
 #[cfg(windows)]
-impl DemoTray {
-    fn new() -> Result<Self, Box<dyn std::error::Error>> {
+impl SystemTray {
+    fn new(mode: RuntimeMode) -> Result<Self, Box<dyn std::error::Error>> {
         use tray_icon::menu::{Menu, MenuItem};
-        let show = MenuItem::new("顯示離線示範", true, None);
-        let exit = MenuItem::new("退出離線示範", true, None);
+        let show = MenuItem::new("顯示 SpeakType Cloud", true, None);
+        let exit = MenuItem::new("退出 SpeakType Cloud", true, None);
         let menu = Menu::with_items(&[&show, &exit])?;
         // The same bundled SVG is rasterized; Windows receives RGBA pixels.
         let image = slint::Image::load_from_svg_data(include_bytes!("../ui/icons/microphone.svg"))?;
@@ -127,7 +369,11 @@ impl DemoTray {
             tray_icon::Icon::from_rgba(rgba.as_bytes().to_vec(), rgba.width(), rgba.height())?;
         let icon = tray_icon::TrayIconBuilder::new()
             .with_icon(icon)
-            .with_tooltip("SpeakType Cloud · 離線示範")
+            .with_tooltip(if mode.is_demo() {
+                "SpeakType Cloud · 離線示範"
+            } else {
+                "SpeakType Cloud"
+            })
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)
             .build()?;
@@ -160,10 +406,10 @@ impl DemoTray {
 }
 
 #[cfg(not(windows))]
-struct DemoTray;
+struct SystemTray;
 #[cfg(not(windows))]
-impl DemoTray {
-    fn new() -> Result<Self, Box<dyn std::error::Error>> {
+impl SystemTray {
+    fn new(mode: RuntimeMode) -> Result<Self, Box<dyn std::error::Error>> {
         Err("Windows tray only".into())
     }
     fn poll(&self) -> Option<TrayAction> {

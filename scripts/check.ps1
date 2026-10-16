@@ -12,6 +12,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "cargo clippy failed with exit code $LASTEXITCODE" }
     & cargo test --locked --all-targets
     if ($LASTEXITCODE -ne 0) { throw "cargo test failed with exit code $LASTEXITCODE" }
+    & cargo test --locked --all-targets --no-default-features --features legacy-ui
+    if ($LASTEXITCODE -ne 0) { throw "legacy comparison tests failed with exit code $LASTEXITCODE" }
     & cargo build --release --locked
     if ($LASTEXITCODE -ne 0) { throw "cargo build --release failed with exit code $LASTEXITCODE" }
 } finally {

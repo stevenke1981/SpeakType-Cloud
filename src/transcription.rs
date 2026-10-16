@@ -1,10 +1,7 @@
 use crate::audio::RecordedAudio;
 use crate::config::AppConfig;
 use crate::error::{AppError, AppResult};
-use crate::paths;
 use crate::providers::{build_provider, ProviderRequest, ProviderResponse, SpeechToTextProvider};
-use chrono::Local;
-use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -51,6 +48,8 @@ pub fn spawn_demo(id: JobId, audio: RecordedAudio, tx: Sender<JobMessage>) -> Ca
             Ok(JobResult {
                 response,
                 local_duration_secs: duration,
+                cleanup: None,
+                cleanup_error: None,
             })
         })();
         let _ = tx.send(JobMessage { id, result });
@@ -88,6 +87,8 @@ pub struct JobMessage {
 pub struct JobResult {
     pub response: ProviderResponse,
     pub local_duration_secs: f32,
+    pub cleanup: Option<crate::cleanup::CleanupResult>,
+    pub cleanup_error: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -115,7 +116,7 @@ impl CancellationToken {
         self.inner.cancelled.load(Ordering::Acquire)
     }
 
-    async fn cancelled(&self) {
+    pub(crate) async fn cancelled(&self) {
         if self.is_cancelled() {
             return;
         }
@@ -131,7 +132,7 @@ impl CancellationToken {
         }
     }
 
-    fn check(&self) -> AppResult<()> {
+    pub(crate) fn check(&self) -> AppResult<()> {
         if self.is_cancelled() {
             Err(AppError::Cancelled)
         } else {
@@ -208,9 +209,6 @@ async fn run(
     let local_duration_secs = audio.duration_secs();
     let wav = audio.wav_16khz_mono_i16()?;
     cancellation.check()?;
-    if config.save_recordings {
-        save_recording(&wav)?;
-    }
     cancellation.check()?;
     let provider = build_provider(&config)?;
     let request = ProviderRequest {
@@ -229,9 +227,21 @@ async fn run(
     if response.text.trim().is_empty() {
         return Err(AppError::Transcription("API 回傳空白辨識結果".to_string()));
     }
+    let (cleanup, cleanup_error) = if config.cleanup.enabled {
+        match crate::cleanup::run(&config, &response.text, cancellation).await {
+            Ok(result) => (Some(result), None),
+            Err(AppError::Cancelled) => return Err(AppError::Cancelled),
+            Err(error) => (None, Some(error.to_string())),
+        }
+    } else {
+        (None, None)
+    };
+    cancellation.check()?;
     Ok(JobResult {
         response,
         local_duration_secs,
+        cleanup,
+        cleanup_error,
     })
 }
 
@@ -259,16 +269,6 @@ pub(crate) async fn transcribe_with_retry(
         }
     }
     Err(AppError::Transcription("重試次數已達上限".to_string()))
-}
-
-fn save_recording(wav: &[u8]) -> AppResult<()> {
-    let dir = paths::recordings_dir();
-    fs::create_dir_all(&dir).map_err(|e| AppError::Io(e.to_string()))?;
-    let path = dir.join(format!(
-        "recording_{}.wav",
-        Local::now().format("%Y%m%d_%H%M%S_%3f")
-    ));
-    fs::write(path, wav).map_err(|e| AppError::Io(e.to_string()))
 }
 
 #[cfg(test)]

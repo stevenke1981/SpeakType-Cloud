@@ -52,7 +52,7 @@ winresource = "0.1"
 slint-build = { version = "=1.18.1", optional = true }
 
 [features]
-default = ["legacy-ui"]
+default = ["slint-ui"]
 slint-ui = ["dep:slint", "dep:slint-build"]
 legacy-ui = ["dep:eframe", "dep:egui"]
 

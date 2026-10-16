@@ -1,0 +1,127 @@
+import { Button, VerticalBox, HorizontalBox, LineEdit, TextEdit, ComboBox, CheckBox, SpinBox, ScrollView } from "std-widgets.slint";
+
+export struct SettingsData {
+    provider: int, mode: int, language: string, prompt: string,
+    openai-model: string, openai-url: string, openrouter-model: string, openrouter-url: string, xai-url: string, gemini-model: string,
+    hotkey: string, hold: bool, launch: bool, device: int, gain: int, min-ms: int, max-secs: int,
+    save-text: bool, save-audio: bool, retention: int, consent: bool,
+    buffer: int, auto-paste: bool, restore-clipboard: bool, preserve-target: bool, copy-fallback: bool, append-space: bool,
+    normalize: bool, variant: int, commands-enabled: bool, commands: string, dictionary: string,
+    realtime-model: string, delay: int, xai-format: bool, keyterms: string, smart-turn: bool, smart-threshold: int, smart-timeout: int,
+    vad-threshold: int, vad-pre-roll: int, vad-speech: int, vad-silence: int, utterance: int,
+    cleanup: bool, fillers: bool, repetitions: bool, corrections: bool, formatting: bool, polish: bool, tone: int, custom-style: string, suggest-terms: bool, suggest-style: bool,
+}
+component Label inherits Text { color: #46536b; vertical-alignment: center; min-width: 140px; }
+component Heading inherits Text { color: #18253d; font-size: 19px; font-weight: 700; }
+export component SettingsPanel inherits Rectangle {
+    in-out property <SettingsData> settings;
+    in property <[string]> devices;
+    in property <[string]> models;
+    in property <bool> busy;
+    in property <string> key-status;
+    callback save();
+    callback reset();
+    callback key-save(int,string);
+    callback key-clear(int);
+    callback models-fetch(int);
+    callback model-picked(int,string);
+    private property <int> key-provider: 3;
+    background: white;
+    border-radius: 12px;
+    VerticalBox {
+        padding: 18px; spacing: 12px;
+        HorizontalBox {
+            Heading { text: "設定"; }
+            Rectangle { horizontal-stretch: 1; }
+            Button { text: "放棄草稿"; enabled: !root.busy; clicked => { root.reset(); } }
+            Button { text: "儲存設定"; enabled: !root.busy; clicked => { root.save(); } }
+        }
+        ScrollView { VerticalBox {
+            spacing: 12px; padding: 4px;
+            Heading { text: "語音服務"; }
+            HorizontalBox { Label { text: "提供者"; } ComboBox { model: ["OpenAI", "xAI", "OpenRouter", "Google Gemini"]; current-index <=> root.settings.provider; } }
+            HorizontalBox { Label { text: "輸入模式"; } ComboBox { model: ["按鍵錄音／批次轉錄", "即時按鍵錄音", "連續聽寫（本機 VAD）"]; current-index <=> root.settings.mode; } }
+            if root.settings.provider == 0: VerticalBox {
+                HorizontalBox { Label { text: "OpenAI 模型"; } LineEdit { text <=> root.settings.openai-model; } }
+                HorizontalBox { Label { text: "OpenAI API 網址"; } LineEdit { text <=> root.settings.openai-url; } }
+            }
+            if root.settings.provider == 1: VerticalBox {
+                HorizontalBox { Label { text: "xAI API 網址"; } LineEdit { text <=> root.settings.xai-url; } }
+                CheckBox { text: "xAI 文字格式化"; checked <=> root.settings.xai-format; }
+                Label { text: "xAI 專有名詞（每行一項）"; }
+                TextEdit { text <=> root.settings.keyterms; min-height: 70px; }
+            }
+            if root.settings.provider == 2: VerticalBox {
+                HorizontalBox { Label { text: "OpenRouter 模型"; } LineEdit { text <=> root.settings.openrouter-model; } }
+                HorizontalBox { Label { text: "OpenRouter API 網址"; } LineEdit { text <=> root.settings.openrouter-url; } }
+            }
+            if root.settings.provider == 3: VerticalBox {
+                HorizontalBox { Label { text: "Gemini 模型"; } LineEdit { text <=> root.settings.gemini-model; } }
+                Text { text: "Gemini 使用 Google 官方端點，目前提供批次轉錄。"; wrap: word-wrap; color: #64748b; }
+            }
+            HorizontalBox {
+                Button { text: "取得模型列表"; enabled: !root.busy; clicked => { root.models-fetch(root.settings.provider); } }
+                ComboBox { model: root.models; selected(value) => { root.model-picked(root.settings.provider, value); } }
+            }
+            HorizontalBox { Label { text: "語言提示"; } LineEdit { text <=> root.settings.language; placeholder-text: "auto、zh-TW、en、ja"; } }
+            Text { text: "auto 由服務辨識語言；保留中英日混用。尚未宣稱 100 種以上語言實測支援。"; wrap: word-wrap; color: #64748b; }
+            Label { text: "轉錄提示（專有名詞／標點）"; }
+            TextEdit { text <=> root.settings.prompt; min-height: 70px; }
+            Heading { text: "API Key 與 Google 資料傳送"; }
+            Text { text: "金鑰保存在 Windows 認證管理員。空白欄位不顯示已保存金鑰。"; wrap: word-wrap; color: #64748b; }
+            HorizontalBox {
+                ComboBox { model: ["OpenAI", "xAI", "OpenRouter", "Google Gemini"]; current-index <=> root.key-provider; }
+                key := LineEdit { input-type: password; placeholder-text: "輸入新的 API Key"; }
+                Button { text: "儲存金鑰"; enabled: !root.busy && key.text != ""; clicked => { root.key-save(root.key-provider,key.text); key.text = ""; } }
+                Button { text: "清除金鑰"; enabled: !root.busy; clicked => { root.key-clear(root.key-provider); key.text = ""; } }
+            }
+            Text { text: root.key-status; color: #64748b; wrap: word-wrap; }
+            CheckBox { text: "我同意將錄音／整理文字傳送 Google Gemini，並了解可能產生 API 費用"; checked <=> root.settings.consent; }
+            Text { text: "Google 免費與付費服務的資料使用規則不同，不能保證零留存或不訓練。請勿傳送不適合該方案的敏感資料。條款：https://ai.google.dev/gemini-api/terms"; wrap: word-wrap; color: #64748b; }
+            Heading { text: "麥克風與快捷鍵"; }
+            HorizontalBox { Label { text: "輸入裝置"; } ComboBox { model: root.devices; current-index <=> root.settings.device; } }
+            HorizontalBox { Label { text: "增益（百分比）"; } SpinBox { minimum: 1; maximum: 500; value <=> root.settings.gain; } Label { text: "最短毫秒"; } SpinBox { minimum: 0; maximum: 10000; value <=> root.settings.min-ms; } }
+            HorizontalBox { Label { text: "最長錄音秒數"; } SpinBox { minimum: 1; maximum: 120; value <=> root.settings.max-secs; } }
+            HorizontalBox { Label { text: "全域快捷鍵"; } LineEdit { text <=> root.settings.hotkey; } }
+            HorizontalBox { CheckBox { text: "按住錄音，放開轉錄"; checked <=> root.settings.hold; } CheckBox { text: "登入時啟動"; checked <=> root.settings.launch; } }
+            Heading { text: "預覽與輸出"; }
+            HorizontalBox { Label { text: "結果保留位置"; } ComboBox { model: ["系統剪貼簿", "App 預覽暫存區"]; current-index <=> root.settings.buffer; } }
+            CheckBox { text: "完成後自動貼上（AI 整理仍需預覽確認）"; checked <=> root.settings.auto-paste; }
+            CheckBox { text: "貼上後還原剪貼簿"; checked <=> root.settings.restore-clipboard; }
+            CheckBox { text: "記住錄音前的外部目標視窗"; checked <=> root.settings.preserve-target; }
+            CheckBox { text: "貼上失敗時允許只複製"; checked <=> root.settings.copy-fallback; }
+            CheckBox { text: "結果結尾加入空白"; checked <=> root.settings.append-space; }
+            Heading { text: "本機歷史與隱私"; }
+            CheckBox { text: "保存轉錄文字（預設關閉）"; checked <=> root.settings.save-text; }
+            CheckBox { text: "保存成功轉錄的原始音檔（預設關閉）"; checked <=> root.settings.save-audio; }
+            HorizontalBox { Label { text: "保留天數（0 永久）"; } SpinBox { minimum: 0; maximum: 36500; value <=> root.settings.retention; } }
+            Text { text: "取消或失敗的錄音不落盤。關閉保存不會刪除既有紀錄，請到歷史頁選擇刪除。"; wrap: word-wrap; color: #64748b; }
+            Heading { text: "AI 文字整理（Google Gemini）"; }
+            CheckBox { text: "啟用雲端整理；每次轉錄後再傳送文字，增加一次 API 請求"; checked <=> root.settings.cleanup; }
+            HorizontalBox { CheckBox { text: "語助詞"; checked <=> root.settings.fillers; } CheckBox { text: "意外重複"; checked <=> root.settings.repetitions; } CheckBox { text: "口頭修正"; checked <=> root.settings.corrections; } }
+            HorizontalBox { CheckBox { text: "清單／段落"; checked <=> root.settings.formatting; } CheckBox { text: "保守潤飾"; checked <=> root.settings.polish; } }
+            HorizontalBox { Label { text: "語氣"; } ComboBox { model: ["保留原語氣", "中性", "親切", "正式"]; current-index <=> root.settings.tone; } }
+            Label { text: "個人風格偏好（最多 1000 字元組）"; }
+            TextEdit { text <=> root.settings.custom-style; min-height: 70px; }
+            CheckBox { text: "提出人名／術語詞典建議，經我確認才加入"; checked <=> root.settings.suggest-terms; }
+            CheckBox { text: "根據提供的偏好提出風格建議，經我確認才採用"; checked <=> root.settings.suggest-style; }
+            Text { text: "整理可能誤判，請比較原文；可隨時還原。不擷取其他程式內容，不宣稱模型訓練或隱藏學習。"; color: #64748b; wrap: word-wrap; }
+            Heading { text: "本機詞典與語音命令"; }
+            CheckBox { text: "正規化中文標點"; checked <=> root.settings.normalize; }
+            HorizontalBox { Label { text: "中文轉換"; } ComboBox { model: ["保持原樣", "臺灣繁體", "簡體中文"]; current-index <=> root.settings.variant; } }
+            Text { text: "自訂詞典：每行「原詞 → 替換詞」；儲存後套用。"; color: #64748b; }
+            TextEdit { text <=> root.settings.dictionary; min-height: 110px; }
+            CheckBox { text: "啟用完整片語比對的語音命令"; checked <=> root.settings.commands-enabled; }
+            Text { text: "每行「片語 → insert:文字」、「片語 → copy:文字」或「片語 → discard」。"; color: #64748b; wrap: word-wrap; }
+            TextEdit { text <=> root.settings.commands; min-height: 90px; }
+            Heading { text: "進階即時聽寫"; }
+            HorizontalBox { Label { text: "OpenAI 即時模型"; } LineEdit { text <=> root.settings.realtime-model; } }
+            HorizontalBox { Label { text: "轉錄延遲"; } ComboBox { model: ["minimal","low","medium","high","xhigh"]; current-index <=> root.settings.delay; } }
+            CheckBox { text: "使用 xAI Smart Turn"; checked <=> root.settings.smart-turn; }
+            HorizontalBox { Label { text: "Smart Turn 門檻 %"; } SpinBox { minimum: 0; maximum: 100; value <=> root.settings.smart-threshold; } Label { text: "逾時毫秒"; } SpinBox { minimum: 1; maximum: 5000; value <=> root.settings.smart-timeout; } }
+            HorizontalBox { Label { text: "VAD RMS × 1000"; } SpinBox { minimum: 1; maximum: 1000; value <=> root.settings.vad-threshold; } Label { text: "前置毫秒"; } SpinBox { minimum: 0; maximum: 2000; value <=> root.settings.vad-pre-roll; } }
+            HorizontalBox { Label { text: "最短語音毫秒"; } SpinBox { minimum: 100; maximum: 10000; value <=> root.settings.vad-speech; } Label { text: "靜音毫秒"; } SpinBox { minimum: 100; maximum: 10000; value <=> root.settings.vad-silence; } }
+            HorizontalBox { Label { text: "每句最長秒數"; } SpinBox { minimum: 1; maximum: 120; value <=> root.settings.utterance; } }
+        } }
+    }
+}

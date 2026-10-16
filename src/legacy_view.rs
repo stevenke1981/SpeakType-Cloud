@@ -5,6 +5,7 @@ use eframe::egui;
 impl eframe::App for SpeakTypeCloudApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.refresh_external_target();
+        self.poll_persistence();
         self.poll_hotkey();
         self.poll_transcription();
         self.poll_realtime();

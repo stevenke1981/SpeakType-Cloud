@@ -19,6 +19,9 @@ pub struct SpeakTypeCloudApp {
     mode: RuntimeMode,
     demo_recording: bool,
     raw_text: String,
+    preview_revision: u64,
+    pub dictionary_suggestions: Vec<crate::config::DictionaryEntry>,
+    pub style_suggestion: Option<String>,
     retry_audio: Option<RecordedAudio>,
     pub config: AppConfig,
     recorder: Recorder,
@@ -49,12 +52,8 @@ pub struct SpeakTypeCloudApp {
     pub(crate) keyterms_edit: String,
     config_load_error: Option<String>,
     next_hotkey_retry: Option<Instant>,
-    /// History entry ID from `history::next_id()`, set in
-    /// `spawn_batch_transcription()` before the job is sent.  The audio WAV is
-    /// already saved when this is `Some`.  `accept()` uses it to build the
-    /// `HistoryEntry`; for realtime the audio is saved inside `accept()` from
-    /// `pending_realtime_audio`.
-    pending_history_id: Option<String>,
+    persistence_rx: Vec<Receiver<Result<(), String>>>,
+    history_store: Option<history::HistoryStore>,
     last_history_cleanup: Option<Instant>,
 }
 
@@ -153,6 +152,9 @@ impl SpeakTypeCloudApp {
             mode,
             demo_recording: false,
             raw_text: String::new(),
+            preview_revision: 0,
+            dictionary_suggestions: Vec::new(),
+            style_suggestion: None,
             retry_audio: None,
             hotkey_edit: config.hotkey.clone(),
             keyterms_edit: config.xai.keyterms.join("\n"),
@@ -186,7 +188,12 @@ impl SpeakTypeCloudApp {
             last_text: String::new(),
             last_error: config_load_error.clone(),
             config_load_error,
-            pending_history_id: None,
+            persistence_rx: Vec::new(),
+            history_store: if mode.is_demo() {
+                None
+            } else {
+                Some(history::HistoryStore::production())
+            },
             last_history_cleanup: None,
             next_hotkey_retry: if hotkey_failed_at_startup {
                 Some(Instant::now() + Duration::from_secs(4))
@@ -198,6 +205,8 @@ impl SpeakTypeCloudApp {
 
     fn start_recording(&mut self) {
         if self.busy
+            || self.active_job.is_some()
+            || self.transcription_rx.is_some()
             || self.is_recording()
             || self.realtime_worker.is_some()
             || self.realtime_rx.is_some()
@@ -214,6 +223,18 @@ impl SpeakTypeCloudApp {
             return;
         }
         if self.busy || self.recorder.is_recording() {
+            return;
+        }
+        if let Err(error) = self.config.validate() {
+            self.fail(error);
+            return;
+        }
+        if (self.config.provider == ProviderKind::Gemini || self.config.cleanup.enabled)
+            && !self.config.gemini.cloud_consent
+        {
+            self.fail(AppError::Configuration(
+                "請先在設定同意 Google 資料傳送".into(),
+            ));
             return;
         }
         let target = self.targets.start_recording(
@@ -315,14 +336,13 @@ impl SpeakTypeCloudApp {
     }
 
     fn spawn_batch_transcription(&mut self, audio: RecordedAudio) {
-        if self.busy || self.realtime_worker.is_some() || self.realtime_rx.is_some() {
+        if self.busy
+            || self.active_job.is_some()
+            || self.transcription_rx.is_some()
+            || self.realtime_worker.is_some()
+            || self.realtime_rx.is_some()
+        {
             return;
-        }
-        // Demo never touches persistent user data. Live persistence is migrated
-        // separately; retain its existing semantics until the privacy slice.
-        if !self.mode.is_demo() {
-            let hist_id = history::next_id();
-            self.pending_history_id = history::save_audio(&hist_id, &audio).ok().map(|_| hist_id);
         }
         self.retry_audio = Some(audio.clone());
 
@@ -342,7 +362,11 @@ impl SpeakTypeCloudApp {
             config: self.config.clone(),
         });
         self.busy = true;
-        self.status = format!("正在使用 {} 辨識…", self.config.provider.label());
+        self.status = if self.mode.is_demo() {
+            "正在處理離線合成音訊…".into()
+        } else {
+            format!("正在使用 {} 辨識…", self.config.provider.label())
+        };
     }
 
     fn toggle_recording(&mut self) {
@@ -541,6 +565,8 @@ impl SpeakTypeCloudApp {
                                     .then(|| self.config.realtime.openai_model.clone()),
                             },
                             local_duration_secs: duration,
+                            cleanup: None,
+                            cleanup_error: None,
                         },
                         preserve_target,
                         &accepted_config,
@@ -655,7 +681,7 @@ impl SpeakTypeCloudApp {
         }
     }
 
-    fn confirm_batch_fallback(&mut self) {
+    pub fn confirm_batch_fallback(&mut self) {
         if self.busy || self.realtime_worker.is_some() || self.realtime_rx.is_some() {
             return;
         }
@@ -681,8 +707,23 @@ impl SpeakTypeCloudApp {
         accepted_config: &AppConfig,
     ) {
         self.raw_text = job.response.text.clone();
+        self.preview_revision = self.preview_revision.wrapping_add(1);
+        let source = job
+            .cleanup
+            .as_ref()
+            .map(|result| result.text.as_str())
+            .unwrap_or(&job.response.text);
+        self.dictionary_suggestions = job
+            .cleanup
+            .as_ref()
+            .map(|result| result.dictionary_suggestions.clone())
+            .unwrap_or_default();
+        self.style_suggestion = job
+            .cleanup
+            .as_ref()
+            .and_then(|result| result.style_suggestion.clone());
         let (text, delivery, processing_error) = match process_transcript(
-            &job.response.text,
+            source,
             &accepted_config.text_processing,
             accepted_config.output.append_space,
         ) {
@@ -700,7 +741,7 @@ impl SpeakTypeCloudApp {
         let target = self.targets.accept_transcript(preserve_recording_target);
         self.last_text = text.clone();
         self.status = "辨識完成".to_string();
-        self.last_error = processing_error;
+        self.last_error = processing_error.or(job.cleanup_error);
         if delivery == DeliveryMode::Discard {
             self.status = "語音命令已執行：不輸出文字".to_string();
             return;
@@ -709,31 +750,38 @@ impl SpeakTypeCloudApp {
             self.status = "示範結果已就緒；未傳送、未儲存、未寫入剪貼簿".into();
             return;
         }
-        // Persist history entry with audio reference.
-        let hist_id = self
-            .pending_history_id
-            .take()
-            .unwrap_or_else(history::next_id);
-        let audio_stem = if history::audio_path(&hist_id).exists() {
-            Some(history::audio_stem(&hist_id))
-        } else if let Some(audio) = &self.pending_realtime_audio {
-            // Realtime mode — audio wasn't saved yet.
-            history::save_audio(&hist_id, audio).ok()
-        } else {
-            None
-        };
-        let entry = HistoryEntry {
-            id: hist_id,
-            created_at: Local::now(),
-            provider: job.response.provider.clone(),
-            duration_secs: job.local_duration_secs,
-            text: text.clone(),
-            audio: audio_stem,
-        };
-        if let Err(error) = history::append(&entry) {
-            record_nonfatal_error(&mut self.last_error, &format!("歷史紀錄未保存：{error}"));
+        // Only an accepted, non-cancelled result may reach persistent storage.
+        if accepted_config.history.save_text || accepted_config.save_recordings {
+            let Some(store) = self.history_store.clone() else {
+                return;
+            };
+            let entry = HistoryEntry {
+                id: history::next_id(),
+                created_at: Local::now(),
+                provider: job.response.provider.clone(),
+                duration_secs: job.local_duration_secs,
+                text: text.clone(),
+                audio: None,
+            };
+            let audio = if accepted_config.transcription_mode.is_realtime() {
+                self.pending_realtime_audio.clone()
+            } else {
+                self.retry_audio.clone()
+            };
+            let save_text = accepted_config.history.save_text;
+            let save_audio = accepted_config.save_recordings;
+            let (tx, rx) = mpsc::channel();
+            self.persistence_rx.push(rx);
+            std::thread::spawn(move || {
+                let _ =
+                    tx.send(store.commit_accepted(entry, audio.as_ref(), save_text, save_audio));
+            });
         }
 
+        if accepted_config.cleanup.enabled {
+            self.status = "整理預覽已就緒；請比較原文後明確複製或貼上".into();
+            return;
+        }
         match accepted_config.output.buffer_mode {
             OutputBufferMode::Temporary => {
                 // App 暫存區模式：不污染系統剪貼簿
@@ -821,7 +869,83 @@ impl SpeakTypeCloudApp {
         }
     }
 
+    pub fn poll_persistence(&mut self) {
+        self.persistence_rx.retain(|rx| match rx.try_recv() {
+            Ok(result) => {
+                if let Err(error) = result {
+                    record_nonfatal_error(
+                        &mut self.last_error,
+                        &format!("歷史紀錄未保存：{error}"),
+                    );
+                }
+                false
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                record_nonfatal_error(&mut self.last_error, "歷史儲存工作中斷");
+                false
+            }
+            Err(mpsc::TryRecvError::Empty) => true,
+        });
+    }
+    pub fn fallback_available(&self) -> bool {
+        self.batch_fallback_audio.is_some()
+    }
+    pub fn open_history_preview(&mut self, text: String) {
+        self.raw_text = text.clone();
+        self.last_text = text;
+        self.targets.last_text = None;
+        self.preview_revision = self.preview_revision.wrapping_add(1);
+        self.status = "歷史文字已開啟；貼上需重新取得安全目標".into();
+    }
+    pub fn restore_original(&mut self) {
+        self.last_text = self.raw_text.clone();
+        self.preview_revision = self.preview_revision.wrapping_add(1);
+        self.status = "已還原轉錄原文".into();
+    }
+    pub fn accept_dictionary_suggestion(&mut self, index: usize) {
+        if let Some(entry) = self.dictionary_suggestions.get(index).cloned() {
+            if let Some(existing) = self
+                .config
+                .text_processing
+                .dictionary
+                .iter_mut()
+                .find(|item| item.source == entry.source)
+            {
+                *existing = entry;
+            } else {
+                self.config.text_processing.dictionary.push(entry);
+            }
+            self.dictionary_suggestions.remove(index);
+            self.status = "已接受詞典建議；請儲存設定以保留".into();
+        }
+    }
+    pub fn reject_dictionary_suggestion(&mut self, index: usize) {
+        if index < self.dictionary_suggestions.len() {
+            self.dictionary_suggestions.remove(index);
+        }
+    }
+    pub fn accept_style_suggestion(&mut self) {
+        if let Some(style) = self.style_suggestion.take() {
+            self.config.cleanup.custom_style = style;
+            self.status = "已接受風格建議；請儲存設定以保留".into();
+        }
+    }
     pub fn tick(&mut self) {
+        self.poll_persistence();
+        if !self.mode.is_demo()
+            && self.config.history.retention_days > 0
+            && self
+                .last_history_cleanup
+                .is_none_or(|time| time.elapsed() > Duration::from_secs(3600))
+        {
+            self.last_history_cleanup = Some(Instant::now());
+            let days = self.config.history.retention_days;
+            let (tx, rx) = mpsc::channel();
+            self.persistence_rx.push(rx);
+            std::thread::spawn(move || {
+                let _ = tx.send(history::cleanup_older_than(days).map(|_| ()));
+            });
+        }
         self.refresh_external_target();
         self.poll_hotkey();
         self.poll_transcription();
@@ -851,6 +975,18 @@ impl SpeakTypeCloudApp {
     }
     pub fn is_busy(&self) -> bool {
         self.busy
+    }
+    pub fn capture_health(&self) -> String {
+        self.live_audio_stats
+            .as_ref()
+            .map(|stats| {
+                format!(
+                    "音訊狀態：遺失 {} 區塊／{} 樣本",
+                    stats.dropped_chunks(),
+                    stats.dropped_capture_samples()
+                )
+            })
+            .unwrap_or_default()
     }
     pub fn status(&self) -> &str {
         &self.status
@@ -900,6 +1036,9 @@ impl SpeakTypeCloudApp {
             self.status = "已複製預覽文字".into();
         }
     }
+    pub fn preview_revision(&self) -> u64 {
+        self.preview_revision
+    }
     pub fn paste_preview(&mut self, text: String) {
         self.last_text = text;
         if self.mode.is_demo() {
@@ -922,7 +1061,10 @@ impl SpeakTypeCloudApp {
     }
 
     fn fail(&mut self, error: AppError) {
-        self.busy = false;
+        self.busy = self.active_job.is_some()
+            || self.transcription_rx.is_some()
+            || self.realtime_worker.is_some()
+            || self.realtime_rx.is_some();
         self.status = "發生錯誤".to_string();
         self.last_error = Some(error.to_string());
     }
@@ -1004,7 +1146,7 @@ impl SpeakTypeCloudApp {
     }
 }
 
-#[cfg(feature = "legacy-ui")]
+#[cfg(all(feature = "legacy-ui", not(feature = "slint-ui")))]
 #[path = "legacy_view.rs"]
 mod legacy_view;
 
@@ -1126,9 +1268,79 @@ mod tests {
                     model: None,
                 },
                 local_duration_secs: 1.0,
+                cleanup: None,
+                cleanup_error: None,
             }),
         })
         .expect("queue success");
+    }
+
+    #[test]
+    fn cancelled_job_cannot_persist_but_accepted_job_uses_injected_store() {
+        let root = std::env::current_dir()
+            .expect("workspace")
+            .join("target")
+            .join(format!("app-history-fixture-{}", history::next_id()));
+        let store = history::HistoryStore::new(root.clone());
+        let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+        // Reuse the isolated constructor: no private config, microphone, key or hotkey.
+        // Only the accept/storage branch is switched on, with an owned fixture root.
+        app.mode = RuntimeMode::Live;
+        app.history_store = Some(store.clone());
+        app.config.history.save_text = true;
+        app.config.save_recordings = true;
+        app.retry_audio = Some(transcription::synthetic_audio());
+        queue_batch_success(&mut app);
+        app.cancel_transcription();
+        app.poll_transcription();
+        assert!(!root.exists());
+        assert!(app.persistence_rx.is_empty());
+        queue_batch_success(&mut app);
+        app.poll_transcription();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !app.persistence_rx.is_empty() && Instant::now() < deadline {
+            app.poll_persistence();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.persistence_rx.is_empty());
+        let entries = store.load().expect("fixture history");
+        assert_eq!(entries.len(), 1);
+        let name = entries[0].audio.as_ref().expect("opted-in audio");
+        assert_eq!(
+            &std::fs::read(root.join("audio").join(name)).expect("fixture WAV")[..4],
+            b"RIFF"
+        );
+        std::fs::remove_dir_all(root).expect("remove owned fixture");
+    }
+
+    #[test]
+    fn settings_failure_keeps_batch_ownership_until_disconnect() {
+        let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+        let (tx, rx) = mpsc::channel();
+        app.transcription_rx = Some(rx);
+        app.active_job = Some(ActiveJob {
+            id: JobId(99),
+            cancellation: CancellationToken::new(),
+            cancelling: false,
+            config: app.config.clone(),
+        });
+        app.busy = true;
+        app.retry_audio = Some(transcription::synthetic_audio());
+        // Inject precisely the settings error path, without accessing any profile.
+        app.cancel_transcription();
+        app.fail(AppError::Configuration(
+            "injected settings write failure".into(),
+        ));
+        app.toggle();
+        assert!(!app.is_recording());
+        app.retry();
+        assert_eq!(app.active_job.as_ref().expect("owned job").id, JobId(99));
+        app.spawn_batch_transcription(transcription::synthetic_audio());
+        assert_eq!(app.active_job.as_ref().expect("owned job").id, JobId(99));
+        drop(tx);
+        app.poll_transcription();
+        app.toggle();
+        assert!(app.is_recording());
     }
 
     #[test]
@@ -1143,7 +1355,7 @@ mod tests {
         assert!(!app.busy);
         assert!(app.raw_text.is_empty());
         assert!(app.last_text.is_empty());
-        assert!(app.pending_history_id.is_none());
+        assert!(app.persistence_rx.is_empty());
         app.toggle();
         assert!(app.is_recording());
     }
@@ -1222,7 +1434,7 @@ mod tests {
         assert!(app.hotkey.is_none());
         assert!(app.targets.last_external.is_none());
         assert!(app.targets.last_text.is_none());
-        assert!(app.pending_history_id.is_none());
+        assert!(app.persistence_rx.is_empty());
         app.toggle();
         assert!(app.is_recording());
         assert!(!app.recorder.is_recording());
@@ -1251,7 +1463,7 @@ mod tests {
         }
         assert!(!app.busy);
         assert!(app.last_text.contains("下午 3 點"));
-        assert!(app.pending_history_id.is_none());
+        assert!(app.persistence_rx.is_empty());
         assert!(!app.recorder.is_recording());
     }
 

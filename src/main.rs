@@ -2,35 +2,38 @@
 
 mod app;
 mod audio;
+mod cleanup;
 mod config;
 mod error;
-#[cfg(feature = "legacy-ui")]
+#[cfg(all(feature = "legacy-ui", not(feature = "slint-ui")))]
 mod fonts;
 mod history;
 mod hotkey;
 mod injector;
 mod paths;
 mod postprocess;
+mod preview;
 mod providers;
 mod realtime;
 mod realtime_worker;
 mod runtime;
 mod secrets;
-#[cfg(feature = "legacy-ui")]
+#[cfg(all(feature = "legacy-ui", not(feature = "slint-ui")))]
 mod shell;
 mod single_instance;
 #[cfg(feature = "slint-ui")]
 mod slint_ui;
 mod startup;
-#[cfg(feature = "legacy-ui")]
+#[cfg(all(feature = "legacy-ui", not(feature = "slint-ui")))]
 mod theme;
 mod transcription;
 mod updater;
 mod vad;
 mod win_util;
 
-#[cfg(feature = "legacy-ui")]
+#[cfg(all(feature = "legacy-ui", not(feature = "slint-ui")))]
 use shell::AppleShell;
+#[cfg(all(feature = "legacy-ui", not(feature = "slint-ui")))]
 use single_instance::SingleInstance;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,28 +41,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = runtime::RuntimeMode::parse(std::env::args().skip(1))?;
     #[cfg(feature = "slint-ui")]
     {
-        if mode.is_demo() {
-            return slint_ui::run(mode);
-        }
+        slint_ui::run(mode)
     }
-    #[cfg(feature = "legacy-ui")]
+    #[cfg(all(feature = "legacy-ui", not(feature = "slint-ui")))]
     {
         if mode.is_demo() {
             return Err("Demo requires the Slint interface".into());
         }
-        legacy_main().map_err(|error| error.to_string().into())
+        legacy_main().map_err(|e| e.to_string().into())
     }
-    #[cfg(not(feature = "legacy-ui"))]
+    #[cfg(not(any(feature = "legacy-ui", feature = "slint-ui")))]
     {
         let _ = mode;
-        Err(
-            "Slint migration preview currently requires --demo; live parity is a release gate"
-                .into(),
-        )
+        Err("Build requires a UI feature".into())
     }
 }
 
-#[cfg(feature = "legacy-ui")]
+#[cfg(all(feature = "legacy-ui", not(feature = "slint-ui")))]
 fn legacy_main() -> eframe::Result<()> {
     let _single_instance = match SingleInstance::acquire() {
         Ok(instance) => Some(instance),
