@@ -4,18 +4,28 @@ use crate::error::{AppError, AppResult};
 use crate::history::{self, HistoryEntry};
 use crate::hotkey::{GlobalHotkey, HotkeyEvent};
 use crate::injector::{copy_text, inject_text, WindowTarget};
-use crate::postprocess::{format_transcript, process_transcript, DeliveryMode};
+use crate::postprocess::{
+    format_transcript, process_formatted_transcript, process_transcript, DeliveryMode,
+};
 use crate::providers::ProviderResponse;
 use crate::realtime::RealtimeEvent;
 use crate::realtime_worker::{self, RealtimeWorkerHandle, WorkerMessage};
+use crate::runtime::RuntimeMode;
 use crate::startup;
 use crate::transcription::{self, CancellationToken, JobId, JobMessage, JobResult};
 use chrono::Local;
-use eframe::egui;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 pub struct SpeakTypeCloudApp {
+    mode: RuntimeMode,
+    closing: bool,
+    demo_recording: bool,
+    raw_text: String,
+    preview_revision: u64,
+    pub dictionary_suggestions: Vec<crate::config::DictionaryEntry>,
+    pub style_suggestion: Option<String>,
+    retry_audio: Option<RecordedAudio>,
     pub config: AppConfig,
     recorder: Recorder,
     hotkey: Option<GlobalHotkey>,
@@ -31,6 +41,9 @@ pub struct SpeakTypeCloudApp {
     pending_realtime_audio: Option<RecordedAudio>,
     batch_fallback_audio: Option<RecordedAudio>,
     realtime_stop_requested: bool,
+    realtime_cancelled: bool,
+    realtime_stopped: bool,
+    session_config: Option<AppConfig>,
     realtime_shutdown_reason: Option<String>,
     active_job: Option<ActiveJob>,
     next_job_id: u64,
@@ -42,12 +55,8 @@ pub struct SpeakTypeCloudApp {
     pub(crate) keyterms_edit: String,
     config_load_error: Option<String>,
     next_hotkey_retry: Option<Instant>,
-    /// History entry ID from `history::next_id()`, set in
-    /// `spawn_batch_transcription()` before the job is sent.  The audio WAV is
-    /// already saved when this is `Some`.  `accept()` uses it to build the
-    /// `HistoryEntry`; for realtime the audio is saved inside `accept()` from
-    /// `pending_realtime_audio`.
-    pending_history_id: Option<String>,
+    persistence_rx: Vec<Receiver<Result<(), String>>>,
+    history_store: Option<history::HistoryStore>,
     last_history_cleanup: Option<Instant>,
 }
 
@@ -62,6 +71,7 @@ struct ActiveJob {
     id: JobId,
     cancellation: CancellationToken,
     cancelling: bool,
+    config: AppConfig,
 }
 
 impl Drop for ActiveJob {
@@ -108,23 +118,48 @@ impl TargetState {
 }
 
 impl SpeakTypeCloudApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let (config, config_load_error) = match AppConfig::load() {
+    pub fn new(mode: RuntimeMode) -> Self {
+        let (mut config, config_load_error) = match if mode.is_demo() {
+            Ok(AppConfig::default())
+        } else {
+            AppConfig::load()
+        } {
             Ok(config) => (config, None),
             Err(error) => (AppConfig::default(), Some(error.to_string())),
         };
+        if mode.is_demo() {
+            config.output.auto_inject = false;
+            config.output.buffer_mode = OutputBufferMode::Temporary;
+            config.save_recordings = false;
+        }
         let recorder = Recorder::new(
             config.recording.input_device_name.clone(),
             config.recording.gain,
         );
-        let devices = recorder.list_devices();
-        let (hotkey, hotkey_error) = match GlobalHotkey::new(&config.hotkey) {
-            Ok(hotkey) => (Some(hotkey), None),
-            Err(error) => (None, Some(error)),
+        let devices = if mode.is_demo() {
+            Vec::new()
+        } else {
+            recorder.list_devices()
+        };
+        let (hotkey, hotkey_error) = if mode.is_demo() {
+            (None, None)
+        } else {
+            match GlobalHotkey::new(&config.hotkey) {
+                Ok(hotkey) => (Some(hotkey), None),
+                Err(error) => (None, Some(error)),
+            }
         };
         let has_startup_error = config_load_error.is_some() || hotkey_error.is_some();
         let hotkey_failed_at_startup = hotkey_error.is_some();
         Self {
+            mode,
+            demo_recording: false,
+            closing: false,
+            raw_text: String::new(),
+            preview_revision: 0,
+            dictionary_suggestions: Vec::new(),
+            style_suggestion: None,
+            retry_audio: None,
             hotkey_edit: config.hotkey.clone(),
             keyterms_edit: config.xai.keyterms.join("\n"),
             config,
@@ -142,6 +177,9 @@ impl SpeakTypeCloudApp {
             pending_realtime_audio: None,
             batch_fallback_audio: None,
             realtime_stop_requested: false,
+            realtime_cancelled: false,
+            realtime_stopped: false,
+            session_config: None,
             realtime_shutdown_reason: None,
             active_job: None,
             next_job_id: 1,
@@ -154,7 +192,12 @@ impl SpeakTypeCloudApp {
             last_text: String::new(),
             last_error: config_load_error.clone(),
             config_load_error,
-            pending_history_id: None,
+            persistence_rx: Vec::new(),
+            history_store: if mode.is_demo() {
+                None
+            } else {
+                Some(history::HistoryStore::production())
+            },
             last_history_cleanup: None,
             next_hotkey_retry: if hotkey_failed_at_startup {
                 Some(Instant::now() + Duration::from_secs(4))
@@ -165,7 +208,38 @@ impl SpeakTypeCloudApp {
     }
 
     fn start_recording(&mut self) {
+        if self.closing
+            || self.busy
+            || self.active_job.is_some()
+            || self.transcription_rx.is_some()
+            || self.is_recording()
+            || self.realtime_worker.is_some()
+            || self.realtime_rx.is_some()
+        {
+            return;
+        }
+        if self.mode.is_demo() {
+            if !self.busy && !self.demo_recording {
+                self.demo_recording = true;
+                self.recording_started = Some(Instant::now());
+                self.last_error = None;
+                self.status = "示範：合成音訊擷取中（未開啟麥克風）".into();
+            }
+            return;
+        }
         if self.busy || self.recorder.is_recording() {
+            return;
+        }
+        if let Err(error) = self.config.validate() {
+            self.fail(error);
+            return;
+        }
+        if (self.config.provider == ProviderKind::Gemini || self.config.cleanup.enabled)
+            && !self.config.gemini.cloud_consent
+        {
+            self.fail(AppError::Configuration(
+                "請先在設定同意 Google 資料傳送".into(),
+            ));
             return;
         }
         let target = self.targets.start_recording(
@@ -183,6 +257,9 @@ impl SpeakTypeCloudApp {
                     self.realtime_worker =
                         Some(realtime_worker::spawn(self.config.clone(), receiver, tx));
                     self.realtime_rx = Some(rx);
+                    self.session_config = Some(self.config.clone());
+                    self.realtime_cancelled = false;
+                    self.realtime_stopped = false;
                     self.live_audio_stats = Some(stats);
                     self.partial_text.clear();
                     self.pending_realtime_audio = None;
@@ -231,6 +308,14 @@ impl SpeakTypeCloudApp {
     }
 
     fn stop_recording(&mut self) {
+        if self.mode.is_demo() {
+            if self.demo_recording {
+                self.demo_recording = false;
+                self.recording_started = None;
+                self.spawn_batch_transcription(crate::transcription::synthetic_audio());
+            }
+            return;
+        }
         if !self.recorder.is_recording() {
             return;
         }
@@ -256,27 +341,42 @@ impl SpeakTypeCloudApp {
     }
 
     fn spawn_batch_transcription(&mut self, audio: RecordedAudio) {
-        // Save audio before spawning so the audio file is ready when
-        // accept() runs after the job completes.
-        let hist_id = history::next_id();
-        self.pending_history_id = history::save_audio(&hist_id, &audio).ok().map(|_| hist_id);
+        if self.closing
+            || self.busy
+            || self.active_job.is_some()
+            || self.transcription_rx.is_some()
+            || self.realtime_worker.is_some()
+            || self.realtime_rx.is_some()
+        {
+            return;
+        }
+        self.retry_audio = Some(audio.clone());
 
         let (tx, rx) = mpsc::channel();
         let id = JobId(self.next_job_id);
         self.next_job_id = self.next_job_id.wrapping_add(1).max(1);
-        let cancellation = transcription::spawn(id, self.config.clone(), audio, tx);
+        let cancellation = if self.mode.is_demo() {
+            transcription::spawn_demo(id, audio, tx)
+        } else {
+            transcription::spawn(id, self.config.clone(), audio, tx)
+        };
         self.transcription_rx = Some(rx);
         self.active_job = Some(ActiveJob {
             id,
             cancellation,
             cancelling: false,
+            config: self.config.clone(),
         });
         self.busy = true;
-        self.status = format!("正在使用 {} 辨識…", self.config.provider.label());
+        self.status = if self.mode.is_demo() {
+            "正在處理離線合成音訊…".into()
+        } else {
+            format!("正在使用 {} 辨識…", self.config.provider.label())
+        };
     }
 
     fn toggle_recording(&mut self) {
-        if self.recorder.is_recording() {
+        if self.is_recording() {
             self.stop_recording();
         } else {
             self.start_recording();
@@ -284,6 +384,9 @@ impl SpeakTypeCloudApp {
     }
 
     fn poll_hotkey(&mut self) {
+        if self.mode.is_demo() {
+            return;
+        }
         // If the hotkey is missing (initial creation failed or runtime death),
         // periodically try to recreate it.  This handles transient system
         // conditions (antivirus delay, UIPI, thread timing) that later resolve.
@@ -350,24 +453,40 @@ impl SpeakTypeCloudApp {
     }
 
     fn poll_transcription(&mut self) {
-        let message = self
-            .transcription_rx
-            .as_ref()
-            .and_then(|rx| rx.try_recv().ok());
-        let Some(message) = message else {
-            return;
+        let received = self.transcription_rx.as_ref().map(|rx| rx.try_recv());
+        let message = match received {
+            Some(Ok(message)) => message,
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                self.transcription_rx = None;
+                self.active_job = None;
+                self.targets.cancel_recording();
+                self.fail(AppError::Transcription("辨識工作已意外結束，請重試".into()));
+                return;
+            }
+            _ => return,
         };
         if !is_current_job(self.active_job.as_ref().map(|active| active.id), message.id) {
             return;
         }
+        let Some(active) = self.active_job.take() else {
+            return;
+        };
         self.transcription_rx = None;
-        self.active_job = None;
         self.busy = false;
+        // Cancel wins even if success was queued before the user cancelled.
+        // The terminal channel is per-job, and no next job is admitted before
+        // this completion (or a disconnected worker) is observed.
+        if active.cancelling {
+            self.targets.cancel_recording();
+            self.status = "辨識已取消".into();
+            self.last_error = None;
+            return;
+        }
         match message.result {
-            Ok(job) => self.accept(job, false),
+            Ok(job) => self.accept(job, false, &active.config),
             Err(AppError::Cancelled) => {
                 self.targets.cancel_recording();
-                self.status = "辨識已取消".to_string();
+                self.status = "辨識已取消".into();
                 self.last_error = None;
             }
             Err(error) => {
@@ -388,13 +507,39 @@ impl SpeakTypeCloudApp {
     }
 
     fn poll_realtime(&mut self) {
+        if !self.realtime_cancelled
+            && self.session_config.as_ref().is_some_and(|accepted| {
+                realtime_settings_fingerprint(accepted)
+                    != realtime_settings_fingerprint(&self.config)
+            })
+        {
+            self.cancel_realtime("設定已變更；先前的即時聽寫已取消");
+        }
         let mut messages = Vec::new();
         if let Some(rx) = &self.realtime_rx {
-            while let Ok(message) = rx.try_recv() {
-                messages.push(message);
+            loop {
+                match rx.try_recv() {
+                    Ok(message) => messages.push(message),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        // A panic can skip Stopped. Still recover without admitting
+                        // a replacement while the actual worker is alive.
+                        if !self.realtime_stopped
+                            && !messages.iter().any(|m| matches!(m, WorkerMessage::Stopped))
+                        {
+                            self.realtime_cancelled = true;
+                            self.last_error = Some("即時工作連線已結束".into());
+                        }
+                        self.realtime_stopped = true;
+                        break;
+                    }
+                }
             }
         }
         for message in messages {
+            if self.realtime_cancelled && !matches!(message, WorkerMessage::Stopped) {
+                continue;
+            }
             match message {
                 WorkerMessage::Event(RealtimeEvent::Created) => {
                     self.status = "Realtime session 已連線；正在接收音訊".to_string();
@@ -412,6 +557,10 @@ impl SpeakTypeCloudApp {
                     let preserve_target = self.config.transcription_mode
                         == TranscriptionMode::ContinuousDictation
                         && !self.realtime_stop_requested;
+                    let accepted_config = self
+                        .session_config
+                        .clone()
+                        .unwrap_or_else(|| self.config.clone());
                     self.accept(
                         JobResult {
                             response: ProviderResponse {
@@ -422,10 +571,14 @@ impl SpeakTypeCloudApp {
                                     .then(|| self.config.realtime.openai_model.clone()),
                             },
                             local_duration_secs: duration,
+                            cleanup: None,
+                            cleanup_error: None,
                         },
                         preserve_target,
+                        &accepted_config,
                     );
                     if !preserve_target {
+                        self.realtime_cancelled = true;
                         self.pending_realtime_audio = None;
                         if let Some(worker) = &self.realtime_worker {
                             worker.cancel();
@@ -455,22 +608,42 @@ impl SpeakTypeCloudApp {
                 WorkerMessage::Event(RealtimeEvent::Error(error))
                 | WorkerMessage::Failed(error) => self.fail_realtime(error),
                 WorkerMessage::Stopped => {
-                    if let Some(mut worker) = self.realtime_worker.take() {
-                        worker.join_after_ack();
-                    }
-                    self.realtime_rx = None;
-                    self.live_audio_stats = None;
-                    self.pending_realtime_audio = None;
-                    self.realtime_stop_requested = false;
-                    if let Some(reason) = self.realtime_shutdown_reason.take() {
-                        self.status = reason;
-                    }
+                    self.realtime_stopped = true;
                 }
+            }
+        }
+        if self.realtime_stopped
+            && self
+                .realtime_worker
+                .as_ref()
+                .is_none_or(RealtimeWorkerHandle::is_finished)
+        {
+            if let Some(mut worker) = self.realtime_worker.take() {
+                if !worker.join_if_finished() {
+                    self.last_error = Some("即時工作未正常結束".into());
+                }
+            }
+            self.realtime_rx = None;
+            // Errors may have marked owned Realtime work busy. Recompute only
+            // after its receiver and finished worker are both released.
+            self.busy = self.active_job.is_some() || self.transcription_rx.is_some();
+            self.live_audio_stats = None;
+            self.pending_realtime_audio = None;
+            self.realtime_stop_requested = false;
+            self.session_config = None;
+            self.realtime_stopped = false;
+            if self.recorder.is_recording() {
+                let _ = self.recorder.stop();
+            }
+            self.recording_started = None;
+            if let Some(reason) = self.realtime_shutdown_reason.take() {
+                self.status = reason;
             }
         }
     }
 
     fn fail_realtime(&mut self, error: String) {
+        self.realtime_cancelled = true;
         let audio = if self.recorder.is_recording() {
             self.recording_started = None;
             Some(self.recorder.stop())
@@ -495,6 +668,7 @@ impl SpeakTypeCloudApp {
     }
 
     fn cancel_realtime(&mut self, reason: &str) {
+        self.realtime_cancelled = true;
         if self.recorder.is_recording() {
             let _ = self.recorder.stop();
         }
@@ -509,16 +683,15 @@ impl SpeakTypeCloudApp {
             worker.cancel();
             self.realtime_shutdown_reason = Some(reason.to_string());
             self.status = "正在取消 Realtime session…".to_string();
-        } else {
-            self.realtime_rx = None;
+        } else if self.realtime_rx.is_none() {
             self.live_audio_stats = None;
             self.realtime_shutdown_reason = None;
             self.status = reason.to_string();
         }
     }
 
-    fn confirm_batch_fallback(&mut self) {
-        if self.busy {
+    pub fn confirm_batch_fallback(&mut self) {
+        if self.busy || self.realtime_worker.is_some() || self.realtime_rx.is_some() {
             return;
         }
         let Some(audio) = take_confirmed_batch_fallback(&mut self.batch_fallback_audio, true)
@@ -530,21 +703,50 @@ impl SpeakTypeCloudApp {
     }
 
     fn refresh_external_target(&mut self) {
+        if self.mode.is_demo() {
+            return;
+        }
         self.targets.observe(WindowTarget::capture_external());
     }
 
-    fn accept(&mut self, job: JobResult, preserve_recording_target: bool) {
-        let (text, delivery, processing_error) = match process_transcript(
-            &job.response.text,
-            &self.config.text_processing,
-            self.config.output.append_space,
+    fn accept(
+        &mut self,
+        job: JobResult,
+        preserve_recording_target: bool,
+        accepted_config: &AppConfig,
+    ) {
+        self.raw_text = job.response.text.clone();
+        self.preview_revision = self.preview_revision.wrapping_add(1);
+        let source = job
+            .cleanup
+            .as_ref()
+            .map(|result| result.text.as_str())
+            .unwrap_or(&job.response.text);
+        self.dictionary_suggestions = job
+            .cleanup
+            .as_ref()
+            .map(|result| result.dictionary_suggestions.clone())
+            .unwrap_or_default();
+        self.style_suggestion = job
+            .cleanup
+            .as_ref()
+            .and_then(|result| result.style_suggestion.clone());
+        let process = if job.cleanup.is_some() {
+            process_formatted_transcript
+        } else {
+            process_transcript
+        };
+        let (text, delivery, processing_error) = match process(
+            source,
+            &accepted_config.text_processing,
+            accepted_config.output.append_space,
         ) {
             Ok(processed) => (processed.text, processed.delivery, None),
             Err(error) => (
                 format_transcript(
                     &job.response.text,
-                    &self.config.text_processing,
-                    self.config.output.append_space,
+                    &accepted_config.text_processing,
+                    accepted_config.output.append_space,
                 ),
                 DeliveryMode::Normal,
                 Some(format!("文字後處理失敗，已保留原辨識文字：{error}")),
@@ -553,45 +755,58 @@ impl SpeakTypeCloudApp {
         let target = self.targets.accept_transcript(preserve_recording_target);
         self.last_text = text.clone();
         self.status = "辨識完成".to_string();
-        self.last_error = processing_error;
+        self.last_error = processing_error.or(job.cleanup_error);
         if delivery == DeliveryMode::Discard {
             self.status = "語音命令已執行：不輸出文字".to_string();
             return;
         }
-        // Persist history entry with audio reference.
-        let hist_id = self
-            .pending_history_id
-            .take()
-            .unwrap_or_else(history::next_id);
-        let audio_stem = if history::audio_path(&hist_id).exists() {
-            Some(history::audio_stem(&hist_id))
-        } else if let Some(audio) = &self.pending_realtime_audio {
-            // Realtime mode — audio wasn't saved yet.
-            history::save_audio(&hist_id, audio).ok()
-        } else {
-            None
-        };
-        let entry = HistoryEntry {
-            id: hist_id,
-            created_at: Local::now(),
-            provider: job.response.provider.clone(),
-            duration_secs: job.local_duration_secs,
-            text: text.clone(),
-            audio: audio_stem,
-        };
-        if let Err(error) = history::append(&entry) {
-            record_nonfatal_error(&mut self.last_error, &format!("歷史紀錄未保存：{error}"));
+        if self.mode.is_demo() {
+            self.status = "示範結果已就緒；未傳送、未儲存、未寫入剪貼簿".into();
+            return;
+        }
+        // Only an accepted, non-cancelled result may reach persistent storage.
+        if accepted_config.history.save_text || accepted_config.save_recordings {
+            let Some(store) = self.history_store.clone() else {
+                return;
+            };
+            let entry = HistoryEntry {
+                id: history::next_id(),
+                created_at: Local::now(),
+                provider: job.response.provider.clone(),
+                duration_secs: job.local_duration_secs,
+                text: text.clone(),
+                audio: None,
+            };
+            let audio = if accepted_config.transcription_mode.is_realtime() {
+                self.pending_realtime_audio.clone()
+            } else {
+                self.retry_audio.clone()
+            };
+            let save_text = accepted_config.history.save_text;
+            let save_audio = accepted_config.save_recordings;
+            let (tx, rx) = mpsc::channel();
+            self.persistence_rx.push(rx);
+            std::thread::spawn(move || {
+                let _ =
+                    tx.send(store.commit_accepted(entry, audio.as_ref(), save_text, save_audio));
+            });
         }
 
-        match self.config.output.buffer_mode {
+        if accepted_config.cleanup.enabled {
+            self.status = "整理預覽已就緒；請比較原文後明確複製或貼上".into();
+            return;
+        }
+        match accepted_config.output.buffer_mode {
             OutputBufferMode::Temporary => {
                 // App 暫存區模式：不污染系統剪貼簿
-                if self.config.output.auto_inject && delivery == DeliveryMode::Normal {
+                if accepted_config.output.auto_inject && delivery == DeliveryMode::Normal {
                     if let Some(target) = target {
-                        if let Err(injection_error) =
-                            inject_text(Some(target), &text, self.config.output.restore_clipboard)
-                        {
-                            if self.config.output.copy_only_on_injection_failure {
+                        if let Err(injection_error) = inject_text(
+                            Some(target),
+                            &text,
+                            accepted_config.output.restore_clipboard,
+                        ) {
+                            if accepted_config.output.copy_only_on_injection_failure {
                                 let feedback =
                                     fallback_delivery_feedback(injection_error, copy_text(&text));
                                 self.status = feedback.status.to_string();
@@ -625,12 +840,14 @@ impl SpeakTypeCloudApp {
             }
             OutputBufferMode::Clipboard => {
                 // 剪貼簿模式：始終複製到系統剪貼簿（保留原行為）
-                if self.config.output.auto_inject && delivery == DeliveryMode::Normal {
+                if accepted_config.output.auto_inject && delivery == DeliveryMode::Normal {
                     if let Some(target) = target {
-                        if let Err(injection_error) =
-                            inject_text(Some(target), &text, self.config.output.restore_clipboard)
-                        {
-                            if self.config.output.copy_only_on_injection_failure {
+                        if let Err(injection_error) = inject_text(
+                            Some(target),
+                            &text,
+                            accepted_config.output.restore_clipboard,
+                        ) {
+                            if accepted_config.output.copy_only_on_injection_failure {
                                 let feedback =
                                     fallback_delivery_feedback(injection_error, copy_text(&text));
                                 self.status = feedback.status.to_string();
@@ -666,13 +883,242 @@ impl SpeakTypeCloudApp {
         }
     }
 
+    pub fn poll_persistence(&mut self) {
+        self.persistence_rx.retain(|rx| match rx.try_recv() {
+            Ok(result) => {
+                if let Err(error) = result {
+                    record_nonfatal_error(
+                        &mut self.last_error,
+                        &format!("歷史紀錄未保存：{error}"),
+                    );
+                }
+                false
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                record_nonfatal_error(&mut self.last_error, "歷史儲存工作中斷");
+                false
+            }
+            Err(mpsc::TryRecvError::Empty) => true,
+        });
+    }
+    pub fn fallback_available(&self) -> bool {
+        self.batch_fallback_audio.is_some()
+    }
+    pub fn open_history_preview(&mut self, text: String) {
+        self.raw_text = text.clone();
+        self.last_text = text;
+        self.targets.last_text = None;
+        self.preview_revision = self.preview_revision.wrapping_add(1);
+        self.status = "歷史文字已開啟；貼上需重新取得安全目標".into();
+    }
+    pub fn restore_original(&mut self) {
+        self.last_text = self.raw_text.clone();
+        self.preview_revision = self.preview_revision.wrapping_add(1);
+        self.status = "已還原轉錄原文".into();
+    }
+    pub fn accept_dictionary_suggestion(&mut self, index: usize) {
+        if let Some(entry) = self.dictionary_suggestions.get(index).cloned() {
+            if let Some(existing) = self
+                .config
+                .text_processing
+                .dictionary
+                .iter_mut()
+                .find(|item| item.source == entry.source)
+            {
+                *existing = entry;
+            } else {
+                self.config.text_processing.dictionary.push(entry);
+            }
+            self.dictionary_suggestions.remove(index);
+            self.status = "已接受詞典建議；請儲存設定以保留".into();
+        }
+    }
+    pub fn reject_dictionary_suggestion(&mut self, index: usize) {
+        if index < self.dictionary_suggestions.len() {
+            self.dictionary_suggestions.remove(index);
+        }
+    }
+    pub fn accept_style_suggestion(&mut self) {
+        if let Some(style) = self.style_suggestion.take() {
+            self.config.cleanup.custom_style = style;
+            self.status = "已接受風格建議；請儲存設定以保留".into();
+        }
+    }
+    pub fn tick(&mut self) {
+        self.poll_persistence();
+        if self.closing {
+            self.poll_transcription();
+            self.poll_realtime();
+            self.status = "正在結束背景工作，請稍候…".into();
+            return;
+        }
+        if !self.mode.is_demo()
+            && self.config.history.retention_days > 0
+            && self
+                .last_history_cleanup
+                .is_none_or(|time| time.elapsed() > Duration::from_secs(3600))
+        {
+            self.last_history_cleanup = Some(Instant::now());
+            let days = self.config.history.retention_days;
+            let (tx, rx) = mpsc::channel();
+            self.persistence_rx.push(rx);
+            std::thread::spawn(move || {
+                let _ = tx.send(history::cleanup_older_than(days).map(|_| ()));
+            });
+        }
+        self.refresh_external_target();
+        self.poll_hotkey();
+        self.poll_transcription();
+        self.poll_realtime();
+        if let Some(error) = self.recorder.take_stream_error() {
+            if self.config.transcription_mode.is_realtime() {
+                self.fail_realtime(error.to_string());
+            } else {
+                let _ = self.recorder.stop();
+                self.recording_started = None;
+                self.fail(error);
+            }
+        }
+        if self.recording_started.is_some_and(|started| {
+            should_stop_for_recording_limit(
+                self.config.transcription_mode,
+                started.elapsed(),
+                self.config.recording.max_duration_secs,
+            )
+        }) {
+            self.stop_recording();
+        }
+    }
+
+    pub fn is_recording(&self) -> bool {
+        self.demo_recording || self.recorder.is_recording()
+    }
+    pub fn is_busy(&self) -> bool {
+        self.busy || self.realtime_worker.is_some() || self.realtime_rx.is_some()
+    }
+    pub fn capture_health(&self) -> String {
+        self.live_audio_stats
+            .as_ref()
+            .map(|stats| {
+                format!(
+                    "音訊狀態：遺失 {} 區塊／{} 樣本",
+                    stats.dropped_chunks(),
+                    stats.dropped_capture_samples()
+                )
+            })
+            .unwrap_or_default()
+    }
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+    pub fn raw_text(&self) -> &str {
+        &self.raw_text
+    }
+    pub fn text(&self) -> &str {
+        &self.last_text
+    }
+    pub fn partial_text(&self) -> &str {
+        &self.partial_text
+    }
+    pub fn toggle(&mut self) {
+        self.toggle_recording();
+    }
+    pub fn cancel(&mut self) {
+        if self.demo_recording {
+            self.demo_recording = false;
+            self.recording_started = None;
+            self.status = "示範擷取已取消".into();
+        } else if self.realtime_worker.is_some() || self.realtime_rx.is_some() {
+            self.cancel_realtime("已取消即時聽寫");
+        } else if self.recorder.is_recording() {
+            let _ = self.recorder.stop();
+            self.recording_started = None;
+            self.targets.cancel_recording();
+            self.status = "錄音已取消".into();
+        } else {
+            self.cancel_transcription();
+        }
+    }
+    pub fn retry(&mut self) {
+        if !self.busy && !self.is_recording() {
+            if let Some(audio) = self.retry_audio.clone() {
+                self.spawn_batch_transcription(audio);
+            }
+        }
+    }
+    pub fn copy_preview(&mut self, text: String) {
+        self.last_text = text;
+        if self.mode.is_demo() {
+            self.status = "示範：已模擬複製，系統剪貼簿未變更".into();
+        } else if let Err(error) = copy_text(&self.last_text) {
+            self.fail(error);
+        } else {
+            self.status = "已複製預覽文字".into();
+        }
+    }
+    pub fn preview_revision(&self) -> u64 {
+        self.preview_revision
+    }
+    pub fn paste_preview(&mut self, text: String) {
+        self.last_text = text;
+        if self.mode.is_demo() {
+            self.status = "示範：已模擬貼上，未操作任何其他程式".into();
+        } else if let Err(error) = inject_text(
+            self.targets.last_text(),
+            &self.last_text,
+            self.config.output.restore_clipboard,
+        ) {
+            self.fail(error);
+        } else {
+            self.status = "已送出貼上；請確認目標程式".into();
+        }
+    }
+    pub fn shutdown(&mut self) {
+        if self.closing {
+            return;
+        }
+        self.closing = true;
+        self.cancel();
+        if let Some(active) = &self.active_job {
+            active.cancellation.cancel();
+        }
+    }
+
+    pub fn is_closing(&self) -> bool {
+        self.closing
+    }
+
+    pub fn shutdown_ready(&self) -> bool {
+        self.closing
+            && self.active_job.is_none()
+            && self.transcription_rx.is_none()
+            && self.realtime_worker.is_none()
+            && self.realtime_rx.is_none()
+            && self.persistence_rx.is_empty()
+            && !self.is_recording()
+    }
+
     fn fail(&mut self, error: AppError) {
-        self.busy = false;
+        self.busy = self.active_job.is_some()
+            || self.transcription_rx.is_some()
+            || self.realtime_worker.is_some()
+            || self.realtime_rx.is_some();
         self.status = "發生錯誤".to_string();
         self.last_error = Some(error.to_string());
     }
 
     pub(crate) fn save_settings(&mut self) {
+        if self.is_recording() {
+            self.cancel();
+        }
+        self.cancel_transcription();
+        if self.realtime_worker.is_some() || self.realtime_rx.is_some() {
+            self.cancel_realtime("設定變更已取消先前工作");
+        }
+        if self.mode.is_demo() {
+            self.status = "示範設定僅保留於記憶體".into();
+            return;
+        }
         if self.realtime_worker.is_some() {
             self.cancel_realtime("Realtime session 已因儲存設定而停止");
         }
@@ -738,350 +1184,9 @@ impl SpeakTypeCloudApp {
     }
 }
 
-impl eframe::App for SpeakTypeCloudApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.refresh_external_target();
-        self.poll_hotkey();
-        self.poll_transcription();
-        self.poll_realtime();
-        let realtime_settings_before = realtime_settings_fingerprint(&self.config);
-        if let Some(error) = self.recorder.take_stream_error() {
-            if self.config.transcription_mode.is_realtime() {
-                self.fail_realtime(error.to_string());
-            } else {
-                let _ = self.recorder.stop();
-                self.recording_started = None;
-                self.fail(error);
-            }
-        }
-        if let Some(started) = self.recording_started {
-            if should_stop_for_recording_limit(
-                self.config.transcription_mode,
-                started.elapsed(),
-                self.config.recording.max_duration_secs,
-            ) {
-                self.stop_recording();
-            }
-        }
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
-                .show(ui, |ui| {
-            // MARK: - Mode selector
-            ui.add_space(4.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    egui::RichText::new("辨識模式")
-                        .size(14.0)
-                        .color(crate::theme::colors::TEXT_PRIMARY)
-                        .strong(),
-                );
-                    // AcmeUIKit-inspired segmented controls remain in normal
-                    // reading order and wrap safely at the minimum width.
-                    if crate::theme::mode_pill(
-                        ui,
-                        self.config.transcription_mode == TranscriptionMode::BatchPtt,
-                        "Batch / PTT",
-                    )
-                    .clicked()
-                    {
-                        if self.recorder.is_recording() || self.busy {
-                            self.status = "請先停止目前錄音或等待辨識完成後再切換模式。".to_string();
-                        } else {
-                            self.config.transcription_mode = TranscriptionMode::BatchPtt;
-                        }
-                    }
-                    if crate::theme::mode_pill(
-                        ui,
-                        self.config.transcription_mode == TranscriptionMode::RealtimePtt,
-                        "Realtime PTT",
-                    )
-                    .clicked()
-                    {
-                        if self.recorder.is_recording() || self.busy {
-                            self.status = "請先停止目前錄音或等待辨識完成後再切換模式。".to_string();
-                        } else {
-                            self.config.transcription_mode = TranscriptionMode::RealtimePtt;
-                        }
-                    }
-                    if crate::theme::mode_pill(
-                        ui,
-                        self.config.transcription_mode == TranscriptionMode::ContinuousDictation,
-                        "Continuous",
-                    )
-                    .clicked()
-                    {
-                        if self.recorder.is_recording() || self.busy {
-                            self.status = "請先停止目前錄音或等待辨識完成後再切換模式。".to_string();
-                        } else {
-                            self.config.transcription_mode = TranscriptionMode::ContinuousDictation;
-                        }
-                    }
-            });
-            ui.add_space(2.0);
-            crate::theme::caption(ui, match self.config.transcription_mode {
-                TranscriptionMode::BatchPtt => {
-                    "按住全域快捷鍵說話，放開後才上傳辨識。"
-                }
-                TranscriptionMode::RealtimePtt => {
-                    "按住時開始串流，放開時手動 commit。"
-                }
-                TranscriptionMode::ContinuousDictation => {
-                    "按下開始後由本地 VAD 分段；再次按下停止。"
-                }
-            });
-            ui.add_space(12.0);
-
-            // MARK: - Status & Action toolbar (AcmeUIKit-inspired single compact card)
-            crate::theme::card(
-                ui,
-                Some("狀態"),
-                Some("目前系統狀態與主要控制按鈕。"),
-                |ui| {
-            // Status line
-            ui.horizontal_wrapped(|ui| {
-                if self.recorder.is_recording() {
-                    crate::theme::recording_dot(ui, true);
-                    ui.strong(
-                        egui::RichText::new("錄音中")
-                            .color(crate::theme::colors::RED_RECORDING),
-                    );
-                } else if self.busy {
-                    crate::theme::processing_dot(ui);
-                    ui.strong(
-                        egui::RichText::new("辨識中")
-                            .color(crate::theme::colors::ACCENT_BLUE),
-                    );
-                } else {
-                    let msg = &self.status;
-                    ui.strong(
-                        egui::RichText::new(msg)
-                            .color(crate::theme::colors::TEXT_PRIMARY),
-                    );
-                }
-            });
-                let record_label = if self.recorder.is_recording() {
-                    if self.config.transcription_mode == TranscriptionMode::ContinuousDictation {
-                        "停止連續聽寫"
-                    } else {
-                        "停止錄音"
-                    }
-                } else if self.config.transcription_mode == TranscriptionMode::ContinuousDictation {
-                    "開始連續聽寫"
-                } else {
-                    "開始錄音"
-                };
-                if crate::theme::primary_button_enabled(ui, !self.busy, record_label).clicked() {
-                    self.toggle_recording();
-                }
-            // Cancel buttons line (when applicable)
-            if self.busy || self.realtime_worker.is_some() {
-                ui.horizontal(|ui| {
-                    if crate::theme::primary_button_enabled(
-                        ui,
-                        self.busy
-                            && !self
-                                .active_job
-                                .as_ref()
-                                .is_some_and(|active| active.cancelling),
-                        "取消辨識",
-                    )
-                    .on_disabled_hover_text("目前沒有進行中的辨識工作")
-                    .clicked()
-                    {
-                        self.cancel_transcription();
-                    }
-                    if crate::theme::primary_button_enabled(
-                        ui,
-                        self.realtime_worker.is_some(),
-                        "取消 Realtime",
-                    )
-                    .on_disabled_hover_text("沒有進行中的 Realtime session")
-                    .clicked()
-                    {
-                        self.cancel_realtime("Realtime session 已由使用者取消");
-                    }
-                });
-            }
-            // Error / warning messages (§9: color + icon + text)
-            if let Some(error) = &self.last_error {
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.colored_label(crate::theme::colors::RED_ERROR, "✗");
-                    ui.colored_label(crate::theme::colors::RED_ERROR, error);
-                });
-            }
-            if let Some(error) = &self.hotkey_error {
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.colored_label(crate::theme::colors::ORANGE_WARNING, "⚠");
-                    ui.colored_label(
-                        crate::theme::colors::ORANGE_WARNING,
-                        format!("全域快捷鍵不可用：{error}"),
-                    );
-                });
-            }
-            if let Some(stats) = &self.live_audio_stats {
-                let dropped = stats.dropped_chunks();
-                let capture_dropped = stats.dropped_capture_samples();
-                if dropped > 0 {
-                    ui.horizontal(|ui| {
-                        ui.colored_label(crate::theme::colors::YELLOW_CAUTION, "⚡");
-                        ui.colored_label(
-                            crate::theme::colors::YELLOW_CAUTION,
-                            format!("Realtime 音訊背壓：已丟棄 {dropped} 個 callback chunks"),
-                        );
-                    });
-                }
-                if capture_dropped > 0 {
-                    ui.horizontal(|ui| {
-                        ui.colored_label(crate::theme::colors::YELLOW_CAUTION, "⚡");
-                        ui.colored_label(
-                            crate::theme::colors::YELLOW_CAUTION,
-                            format!("錄音保留 ring 已覆寫／略過 {capture_dropped} 個 samples"),
-                        );
-                    });
-                }
-            }
-            });
-            ui.add_space(12.0);
-
-            // Batch fallback warning
-            if self.batch_fallback_audio.is_some() {
-                crate::theme::card(ui, None, None, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.colored_label(crate::theme::colors::ORANGE_WARNING, "⚠");
-                    ui.colored_label(
-                        crate::theme::colors::ORANGE_WARNING,
-                        "Realtime 失敗後不會自動重傳。此段音訊可能包含已顯示的 partial；請確認後才改用 Batch。",
-                    );
-                });
-                if crate::theme::primary_button(ui, "確認改用 Batch 上傳此段音訊").clicked() {
-                    self.confirm_batch_fallback();
-                }
-                });
-                ui.add_space(12.0);
-            }
-
-            // MARK: - Latest transcript card with inline actions (AcmeUIKit pattern)
-            crate::theme::card(
-                ui,
-                Some("最近辨識文字"),
-                Some("點選「複製」或「再次注入」使用本次辨識結果。"),
-                |ui| {
-            ui.add(
-                egui::TextEdit::multiline(&mut self.last_text)
-                    .desired_rows(4)
-                    .desired_width(f32::INFINITY)
-                    .font(egui::TextStyle::Monospace),
-            );
-            ui.horizontal_wrapped(|ui| {
-                if crate::theme::ghost_button(ui, "📋 複製文字").clicked() {
-                    match copy_text(&self.last_text) {
-                        Ok(()) => self.status = "已複製到剪貼簿".to_string(),
-                        Err(error) => {
-                            self.status = "複製失敗，文字仍保留".to_string();
-                            self.last_error = Some(error.to_string());
-                        }
-                    }
-                }
-                if crate::theme::ghost_button(ui, "↩ 再次貼上").clicked() && !self.last_text.is_empty() {
-                    if let Some(target) = self.targets.last_text() {
-                        if let Err(injection_error) = inject_text(
-                            Some(target),
-                            &self.last_text,
-                            self.config.output.restore_clipboard,
-                        ) {
-                            let feedback = fallback_delivery_feedback(
-                                injection_error,
-                                copy_text(&self.last_text),
-                            );
-                            self.status = feedback.status.to_string();
-                            self.last_error = Some(feedback.error);
-                        } else {
-                            self.status = "已再次貼到原本的外部視窗".to_string();
-                        }
-                    } else {
-                        match copy_text(&self.last_text) {
-                            Ok(()) => {
-                                self.status = "沒有原外部目標，文字已複製到剪貼簿".to_string()
-                            }
-                            Err(error) => {
-                                self.status = "沒有原外部目標且複製失敗，文字仍保留".to_string();
-                                self.last_error = Some(error.to_string());
-                            }
-                        }
-                    }
-                }
-            });
-            });
-            ui.add_space(12.0);
-
-            // MARK: - Realtime partial (conditional)
-            if !self.partial_text.is_empty() {
-                crate::theme::card(ui, Some("Realtime partial 字幕（尚未寫入 history／注入）"), None, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.partial_text)
-                        .desired_rows(2)
-                        .desired_width(f32::INFINITY)
-                        .interactive(false)
-                        .font(egui::TextStyle::Monospace),
-                );
-                });
-            }
-            }); // ScrollArea
-        });
-        if self.realtime_worker.is_some()
-            && realtime_settings_fingerprint(&self.config) != realtime_settings_before
-        {
-            self.cancel_realtime("Realtime session 已因 provider／模式／設定變更而停止");
-        }
-        // Smart repaint scheduling — only repaint when state requires it:
-        // - Recording active: poll at 8 Hz for timer/duration display
-        // Run history cleanup once per day (or on first update).
-        let now = Instant::now();
-        let should_cleanup = self
-            .last_history_cleanup
-            .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(86400));
-        if should_cleanup {
-            self.last_history_cleanup = Some(now);
-            if self.config.history.retention_days > 0 {
-                match history::cleanup_older_than(self.config.history.retention_days) {
-                    Ok(count) if count > 0 => {
-                        record_nonfatal_error(
-                            &mut self.last_error,
-                            &format!("已清理 {count} 筆過期歷史紀錄"),
-                        );
-                    }
-                    Err(error) => {
-                        record_nonfatal_error(
-                            &mut self.last_error,
-                            &format!("歷史紀錄清理失敗：{error}"),
-                        );
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // - Realtime session active: poll at 28 Hz for partial subtitles
-        // - Batch transcription busy: poll at 8 Hz for completion
-        // - Otherwise: poll at 4 Hz for tray/hotkey events (idle mode)
-        let repaint_interval = if self.recorder.is_recording() {
-            if self.config.transcription_mode.is_realtime() {
-                Duration::from_millis(35) // ~28 Hz for realtime partial updates
-            } else {
-                Duration::from_millis(125) // ~8 Hz for timer/recording limit
-            }
-        } else if self.busy || self.realtime_worker.is_some() {
-            Duration::from_millis(125) // ~8 Hz, waiting for completion
-        } else {
-            Duration::from_millis(250) // ~4 Hz idle — tray/hotkey polling only
-        };
-        ctx.request_repaint_after(repaint_interval);
-    }
-}
+#[cfg(all(feature = "legacy-ui", not(feature = "slint-ui")))]
+#[path = "legacy_view.rs"]
+mod legacy_view;
 
 struct DeliveryFeedback {
     status: &'static str,
@@ -1131,36 +1236,10 @@ fn realtime_settings_fingerprint(config: &AppConfig) -> u64 {
     use std::hash::{Hash, Hasher};
 
     let mut hasher = DefaultHasher::new();
-    config.provider.hash(&mut hasher);
-    config.transcription_mode.hash(&mut hasher);
-    config.language.hash(&mut hasher);
-    config.openai.api_key_env.hash(&mut hasher);
-    config.xai.api_key_env.hash(&mut hasher);
-    config.openrouter.api_key_env.hash(&mut hasher);
-    config.openai.model.hash(&mut hasher);
-    config.openrouter.model.hash(&mut hasher);
-    config.realtime.openai_model.hash(&mut hasher);
-    config
-        .realtime
-        .openai_transcription_delay
-        .as_api_str()
+    // Config never contains key values. Cover every delivery/persistence setting.
+    serde_json::to_string(config)
+        .unwrap_or_default()
         .hash(&mut hasher);
-    config.realtime.xai_smart_turn_enabled.hash(&mut hasher);
-    config
-        .realtime
-        .xai_smart_turn_threshold
-        .to_bits()
-        .hash(&mut hasher);
-    config.realtime.xai_smart_turn_timeout_ms.hash(&mut hasher);
-    config
-        .realtime
-        .vad_rms_threshold
-        .to_bits()
-        .hash(&mut hasher);
-    config.realtime.vad_pre_roll_ms.hash(&mut hasher);
-    config.realtime.vad_min_speech_ms.hash(&mut hasher);
-    config.realtime.vad_silence_ms.hash(&mut hasher);
-    config.realtime.max_utterance_secs.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -1205,6 +1284,336 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cp4_realtime_error_releases_busy_after_stop_or_disconnect() {
+        for disconnect in [false, true] {
+            let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+            let (tx, rx) = mpsc::channel();
+            app.realtime_rx = Some(rx);
+            assert!(
+                app.is_busy(),
+                "finalization must expose Cancel even without capture"
+            );
+            app.cancel();
+            assert!(app.realtime_cancelled);
+            app.fail(AppError::Io("injected settings failure".into()));
+            app.toggle();
+            assert!(!app.is_recording());
+            if !disconnect {
+                tx.send(WorkerMessage::Stopped).expect("stop");
+            }
+            drop(tx);
+            app.poll_realtime();
+            assert!(!app.is_busy());
+            app.toggle();
+            assert!(app.is_recording());
+        }
+    }
+
+    #[test]
+    fn cp4_terminal_realtime_recomputes_error_latch() {
+        let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+        let (tx, rx) = mpsc::channel();
+        app.realtime_rx = Some(rx);
+        app.fail(AppError::Io("injected error while finalizing".into()));
+        assert!(app.busy);
+        tx.send(WorkerMessage::Stopped).expect("stop");
+        app.poll_realtime();
+        assert!(!app.busy);
+        app.toggle();
+        assert!(app.is_recording());
+    }
+
+    #[test]
+    fn cp4_formatted_cleanup_survives_preview_and_persistence() {
+        let root = std::env::current_dir()
+            .expect("workspace")
+            .join("target")
+            .join(format!("formatted-fixture-{}", history::next_id()));
+        let store = history::HistoryStore::new(root.clone());
+        let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+        app.mode = RuntimeMode::Live;
+        app.history_store = Some(store.clone());
+        app.config.history.save_text = true;
+        app.config.cleanup.enabled = true; // No clipboard/injection, even in live acceptance branch.
+        app.config.output.append_space = false;
+        app.config
+            .text_processing
+            .dictionary
+            .push(crate::config::DictionaryEntry {
+                source: "Ada".into(),
+                replacement: "Grace".into(),
+            });
+        let config = app.config.clone();
+        app.accept(
+            JobResult {
+                response: ProviderResponse {
+                    text: "raw dictated text".into(),
+                    provider: "mock".into(),
+                    duration_secs: None,
+                    model: None,
+                },
+                local_duration_secs: 1.0,
+                cleanup: Some(crate::cleanup::CleanupResult {
+                    text: "1. Buy milk\r\n2. Call Ada\n\nNext paragraph.\u{7}".into(),
+                    dictionary_suggestions: Vec::new(),
+                    style_suggestion: None,
+                }),
+                cleanup_error: None,
+            },
+            false,
+            &config,
+        );
+        let expected = "1. Buy milk\n2. Call Grace\n\nNext paragraph.";
+        assert_eq!(app.text(), expected);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !app.persistence_rx.is_empty() && Instant::now() < deadline {
+            app.poll_persistence();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.persistence_rx.is_empty());
+        assert_eq!(store.load().expect("stored result")[0].text, expected);
+        std::fs::remove_dir_all(root).expect("remove owned fixture");
+    }
+
+    fn queue_batch_success(app: &mut SpeakTypeCloudApp) {
+        let (tx, rx) = mpsc::channel();
+        let id = JobId(99);
+        app.active_job = Some(ActiveJob {
+            id,
+            cancellation: CancellationToken::new(),
+            cancelling: false,
+            config: app.config.clone(),
+        });
+        app.transcription_rx = Some(rx);
+        app.busy = true;
+        tx.send(JobMessage {
+            id,
+            result: Ok(JobResult {
+                response: ProviderResponse {
+                    text: "must not deliver".into(),
+                    provider: "mock".into(),
+                    duration_secs: None,
+                    model: None,
+                },
+                local_duration_secs: 1.0,
+                cleanup: None,
+                cleanup_error: None,
+            }),
+        })
+        .expect("queue success");
+    }
+
+    #[test]
+    fn cancelled_job_cannot_persist_but_accepted_job_uses_injected_store() {
+        let root = std::env::current_dir()
+            .expect("workspace")
+            .join("target")
+            .join(format!("app-history-fixture-{}", history::next_id()));
+        let store = history::HistoryStore::new(root.clone());
+        let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+        // Reuse the isolated constructor: no private config, microphone, key or hotkey.
+        // Only the accept/storage branch is switched on, with an owned fixture root.
+        app.mode = RuntimeMode::Live;
+        app.history_store = Some(store.clone());
+        app.config.history.save_text = true;
+        app.config.save_recordings = true;
+        app.retry_audio = Some(transcription::synthetic_audio());
+        queue_batch_success(&mut app);
+        app.cancel_transcription();
+        app.poll_transcription();
+        assert!(!root.exists());
+        assert!(app.persistence_rx.is_empty());
+        queue_batch_success(&mut app);
+        app.poll_transcription();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !app.persistence_rx.is_empty() && Instant::now() < deadline {
+            app.poll_persistence();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.persistence_rx.is_empty());
+        let entries = store.load().expect("fixture history");
+        assert_eq!(entries.len(), 1);
+        let name = entries[0].audio.as_ref().expect("opted-in audio");
+        assert_eq!(
+            &std::fs::read(root.join("audio").join(name)).expect("fixture WAV")[..4],
+            b"RIFF"
+        );
+        std::fs::remove_dir_all(root).expect("remove owned fixture");
+    }
+
+    #[test]
+    fn settings_failure_keeps_batch_ownership_until_disconnect() {
+        let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+        let (tx, rx) = mpsc::channel();
+        app.transcription_rx = Some(rx);
+        app.active_job = Some(ActiveJob {
+            id: JobId(99),
+            cancellation: CancellationToken::new(),
+            cancelling: false,
+            config: app.config.clone(),
+        });
+        app.busy = true;
+        app.retry_audio = Some(transcription::synthetic_audio());
+        // Inject precisely the settings error path, without accessing any profile.
+        app.cancel_transcription();
+        app.fail(AppError::Configuration(
+            "injected settings write failure".into(),
+        ));
+        app.toggle();
+        assert!(!app.is_recording());
+        app.retry();
+        assert_eq!(app.active_job.as_ref().expect("owned job").id, JobId(99));
+        app.spawn_batch_transcription(transcription::synthetic_audio());
+        assert_eq!(app.active_job.as_ref().expect("owned job").id, JobId(99));
+        drop(tx);
+        app.poll_transcription();
+        app.toggle();
+        assert!(app.is_recording());
+    }
+
+    #[test]
+    fn queued_success_is_rejected_after_cancel_and_start_waits_for_ack() {
+        let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+        queue_batch_success(&mut app);
+        app.cancel();
+        app.toggle();
+        assert!(!app.is_recording());
+        assert!(app.busy);
+        app.poll_transcription();
+        assert!(!app.busy);
+        assert!(app.raw_text.is_empty());
+        assert!(app.last_text.is_empty());
+        assert!(app.persistence_rx.is_empty());
+        app.toggle();
+        assert!(app.is_recording());
+    }
+
+    #[test]
+    fn queued_realtime_final_is_rejected_after_cancel_until_stopped() {
+        let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+        let (tx, rx) = mpsc::channel();
+        app.realtime_rx = Some(rx);
+        tx.send(WorkerMessage::Event(RealtimeEvent::Final(
+            "must not deliver".into(),
+        )))
+        .expect("send final");
+        app.cancel_realtime("cancel");
+        app.toggle();
+        assert!(!app.is_recording());
+        app.poll_realtime();
+        assert!(app.raw_text.is_empty());
+        assert!(app.last_text.is_empty());
+        assert!(app.realtime_rx.is_some());
+        tx.send(WorkerMessage::Stopped).expect("send stop");
+        app.poll_realtime();
+        assert!(app.realtime_rx.is_none());
+        app.toggle();
+        assert!(app.is_recording());
+    }
+
+    #[test]
+    fn changing_settings_invalidates_queued_final_and_batch_success() {
+        let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+        let (tx, rx) = mpsc::channel();
+        app.realtime_rx = Some(rx);
+        app.session_config = Some(app.config.clone());
+        tx.send(WorkerMessage::Event(RealtimeEvent::Final(
+            "old settings".into(),
+        )))
+        .expect("send final");
+        app.config.provider = ProviderKind::Xai;
+        app.poll_realtime();
+        assert!(app.raw_text.is_empty());
+        assert!(app.realtime_cancelled);
+        tx.send(WorkerMessage::Stopped).expect("stop");
+        app.poll_realtime();
+        queue_batch_success(&mut app);
+        app.save_settings();
+        app.poll_transcription();
+        assert!(app.raw_text.is_empty());
+    }
+
+    #[test]
+    fn disconnected_workers_recover_instead_of_remaining_busy() {
+        let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+        let (tx, rx) = mpsc::channel();
+        app.transcription_rx = Some(rx);
+        app.busy = true;
+        drop(tx);
+        app.poll_transcription();
+        assert!(!app.busy);
+        assert!(app.last_error.is_some());
+        let (tx, rx) = mpsc::channel();
+        app.realtime_rx = Some(rx);
+        drop(tx);
+        app.poll_realtime();
+        assert!(app.realtime_rx.is_none());
+    }
+
+    #[test]
+    fn demo_bootstrap_and_commands_have_no_live_handles() {
+        let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+        assert!(app.hotkey.is_none());
+        assert!(app.devices.is_empty());
+        app.tick();
+        app.save_settings();
+        app.copy_preview("synthetic".into());
+        app.paste_preview("synthetic".into());
+        assert!(app.hotkey.is_none());
+        assert!(app.targets.last_external.is_none());
+        assert!(app.targets.last_text.is_none());
+        assert!(app.persistence_rx.is_empty());
+        app.toggle();
+        assert!(app.is_recording());
+        assert!(!app.recorder.is_recording());
+        app.cancel();
+        assert!(!app.is_recording());
+    }
+
+    #[test]
+    fn shutdown_drains_owned_work_and_rejects_new_recording() {
+        let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+        queue_batch_success(&mut app);
+        let (tx, rx) = mpsc::channel();
+        app.persistence_rx.push(rx);
+        app.shutdown();
+        assert!(!app.shutdown_ready());
+        app.tick();
+        assert!(app.raw_text.is_empty());
+        assert!(!app.shutdown_ready(), "pending disk commit must finish");
+        app.toggle();
+        assert!(!app.is_recording());
+        tx.send(Ok(())).expect("complete synthetic persistence");
+        app.tick();
+        assert!(app.shutdown_ready());
+    }
+
+    #[test]
+    fn demo_uses_real_worker_wav_and_cancellation_without_a_microphone() {
+        let mut app = SpeakTypeCloudApp::new(RuntimeMode::Demo);
+        app.toggle();
+        app.toggle();
+        assert!(app.busy);
+        app.cancel();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while app.busy && Instant::now() < deadline {
+            app.tick();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!app.busy);
+        assert!(app.last_text.is_empty());
+        app.retry();
+        while app.busy && Instant::now() < deadline {
+            app.tick();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!app.busy);
+        assert!(app.last_text.contains("下午 3 點"));
+        assert!(app.persistence_rx.is_empty());
+        assert!(!app.recorder.is_recording());
+    }
 
     #[test]
     fn fallback_copy_failure_is_reported_without_claiming_copy_succeeded() {

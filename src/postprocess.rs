@@ -42,6 +42,31 @@ pub fn process_transcript(
     append_space: bool,
 ) -> AppResult<ProcessedTranscript> {
     let cleaned = clean_transcript(text, false);
+    process_cleaned_transcript(cleaned, config, append_space)
+}
+
+/// Keep intentional list/paragraph boundaries from accepted structured output.
+/// CRLF/CR become LF; other controls remain excluded by the per-line cleaner.
+pub fn process_formatted_transcript(
+    text: &str,
+    config: &TextProcessingConfig,
+    append_space: bool,
+) -> AppResult<ProcessedTranscript> {
+    let cleaned = text
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .split('\n')
+        .map(|line| clean_transcript(&line.replace('\t', " "), false))
+        .collect::<Vec<_>>()
+        .join("\n");
+    process_cleaned_transcript(cleaned.trim().to_string(), config, append_space)
+}
+
+fn process_cleaned_transcript(
+    cleaned: String,
+    config: &TextProcessingConfig,
+    append_space: bool,
+) -> AppResult<ProcessedTranscript> {
     let (output, delivery) = if config.voice_commands_enabled {
         if let Some(command) = config
             .voice_commands

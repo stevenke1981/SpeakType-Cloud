@@ -1,18 +1,31 @@
+#[cfg(test)]
 use crate::audio::RecordedAudio;
 use crate::paths;
-use chrono::{DateTime, Days, Local};
+#[cfg(test)]
+use chrono::Days;
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+#[cfg(test)]
+use std::io::Write;
+mod store;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+pub use store::HistoryStore;
 
 static NEXT_HISTORY_ID: AtomicU64 = AtomicU64::new(0);
 
 pub fn next_id() -> String {
     let ts = Local::now().format("%Y%m%d_%H%M%S");
     let seq = NEXT_HISTORY_ID.fetch_add(1, Ordering::Relaxed);
-    format!("{ts}_{seq:04}")
+    format!(
+        "{ts}_{}_{seq:04}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    )
 }
 
 /// Canonical stem for the audio WAV file on disk.
@@ -21,6 +34,7 @@ pub fn audio_stem(id: &str) -> String {
 }
 
 /// Full path to the audio WAV file for a history entry.
+#[cfg(all(feature = "legacy-ui", not(feature = "slint-ui")))]
 pub fn audio_path(id: &str) -> PathBuf {
     paths::history_audio_dir().join(audio_stem(id))
 }
@@ -41,6 +55,7 @@ pub struct HistoryEntry {
 impl HistoryEntry {
     /// Audio WAV file path, if the entry has audio.
     pub fn audio_path(&self) -> Option<PathBuf> {
+        store::validate_entry(self).ok()?;
         self.audio
             .as_ref()
             .map(|name| paths::history_audio_dir().join(name))
@@ -62,105 +77,21 @@ impl HistoryEntry {
 // Persistence
 // ---------------------------------------------------------------------------
 
-/// Append a single entry to the JSONL file.
-pub fn append(entry: &HistoryEntry) -> Result<(), String> {
-    let path = paths::history_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|e| e.to_string())?;
-    let line = serde_json::to_string(entry).map_err(|e| e.to_string())?;
-    writeln!(file, "{line}").map_err(|e| e.to_string())
+/// Errors are returned to the production history screen instead of overwriting data.
+pub fn load() -> Result<Vec<HistoryEntry>, String> {
+    HistoryStore::production().load()
 }
-
-/// Load all history entries; returns an empty vec on error.
+// Legacy adapter retained while the Slint history screen is migrated.
+#[cfg(all(feature = "legacy-ui", not(feature = "slint-ui")))]
 pub fn load_all() -> Vec<HistoryEntry> {
-    let path = paths::history_path();
-    let file = match fs::File::open(&path) {
-        Ok(f) => BufReader::new(f),
-        Err(_) => return Vec::new(),
-    };
-    file.lines()
-        .filter_map(|line| line.ok().and_then(|l| serde_json::from_str(&l).ok()))
-        .collect()
+    load().unwrap_or_default()
 }
-
-/// Persist a full entry list (rewrites the entire file).  Used after
-/// deletions.
-fn save_all(entries: &[HistoryEntry]) -> Result<(), String> {
-    let path = paths::history_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&path)
-        .map_err(|e| e.to_string())?;
-    for entry in entries {
-        let line = serde_json::to_string(entry).map_err(|e| e.to_string())?;
-        writeln!(file, "{line}").map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-/// Delete one entry by id: removes it from the JSONL file and deletes the
-/// associated audio WAV file (if any).
+#[cfg(all(feature = "legacy-ui", not(feature = "slint-ui")))]
 pub fn delete_entry(id: &str) -> Result<(), String> {
-    // Delete the audio file (best-effort).
-    let wav = audio_path(id);
-    let _ = fs::remove_file(&wav);
-
-    // Rewrite the JSONL without this entry.
-    let entries = load_all();
-    let filtered: Vec<HistoryEntry> = entries.into_iter().filter(|e| e.id != id).collect();
-    save_all(&filtered)
+    HistoryStore::production().delete(id)
 }
-
-/// Remove entries older than `days`.  Also deletes their audio files.
-/// Returns the number of removed entries.
 pub fn cleanup_older_than(days: u64) -> Result<usize, String> {
-    if days == 0 {
-        return Ok(0);
-    }
-    let cutoff = Local::now()
-        .checked_sub_days(Days::new(days))
-        .unwrap_or(Local::now());
-    let entries = load_all();
-    let mut removed = 0usize;
-    let mut keep: Vec<HistoryEntry> = Vec::with_capacity(entries.len());
-    for entry in entries {
-        if entry.created_at < cutoff {
-            // Delete audio (best-effort).
-            if let Some(path) = entry.audio_path() {
-                let _ = fs::remove_file(&path);
-            }
-            removed = removed.saturating_add(1);
-        } else {
-            keep.push(entry);
-        }
-    }
-    if removed > 0 {
-        save_all(&keep)?;
-    }
-    Ok(removed)
-}
-
-/// Save a `RecordedAudio` as a 16‑kHz mono 16‑bit WAV file in the history
-/// audio directory.  Returns the canonical filename (e.g. "20260719_123456_0000.wav")
-/// on success, or an error message on failure.
-pub fn save_audio(id: &str, audio: &RecordedAudio) -> Result<String, String> {
-    let dir = paths::history_audio_dir();
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let wav_bytes = audio.wav_16khz_mono_i16().map_err(|e| e.to_string())?;
-    let path = dir.join(audio_stem(id));
-    fs::write(&path, &wav_bytes).map_err(|e| e.to_string())?;
-    Ok(audio_stem(id))
+    HistoryStore::production().cleanup(days)
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +102,143 @@ pub fn save_audio(id: &str, audio: &RecordedAudio) -> Result<String, String> {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    fn fixture() -> HistoryStore {
+        HistoryStore::new(
+            std::env::current_dir()
+                .expect("workspace")
+                .join("target")
+                .join(format!(
+                    "speaktype-store-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .expect("clock")
+                        .as_nanos()
+                )),
+        )
+    }
+    #[test]
+    fn actual_store_obeys_all_four_privacy_combinations() {
+        for text in [false, true] {
+            for audio in [false, true] {
+                let store = fixture();
+                let entry = make_entry(Local::now(), "synthetic private transcript");
+                store
+                    .commit_accepted(entry.clone(), Some(&sample_audio()), text, audio)
+                    .expect("commit");
+                if !text && !audio {
+                    assert!(!store.root.exists());
+                    continue;
+                }
+                let entries = store.load().expect("load");
+                assert_eq!(entries.len(), 1);
+                assert_eq!(
+                    entries[0].text,
+                    if text {
+                        "synthetic private transcript"
+                    } else {
+                        ""
+                    }
+                );
+                assert_eq!(
+                    store
+                        .root
+                        .join("audio")
+                        .join(audio_stem(&entry.id))
+                        .exists(),
+                    audio
+                );
+                store.delete(&entry.id).expect("delete");
+                assert!(store.load().expect("load after delete").is_empty());
+                assert!(!store
+                    .root
+                    .join("audio")
+                    .join(audio_stem(&entry.id))
+                    .exists());
+                fs::remove_dir_all(&store.root).expect("remove own fixture");
+            }
+        }
+    }
+    #[test]
+    fn failed_manifest_rolls_back_audio_and_corrupt_history_is_preserved() {
+        let store = fixture();
+        fs::create_dir_all(&store.root).expect("fixture");
+        fs::write(store.root.join("entries.jsonl"), b"invalid-json\n").expect("corrupt fixture");
+        let entry = make_entry(Local::now(), "fixture");
+        assert!(store
+            .commit_accepted(entry.clone(), Some(&sample_audio()), true, true)
+            .is_err());
+        assert_eq!(
+            fs::read(store.root.join("entries.jsonl")).expect("read"),
+            b"invalid-json\n"
+        );
+        assert!(!store
+            .root
+            .join("audio")
+            .join(audio_stem(&entry.id))
+            .exists());
+        fs::remove_dir_all(&store.root).expect("remove fixture");
+    }
+    #[test]
+    fn traversal_audio_reference_and_id_are_rejected() {
+        let store = fixture();
+        let mut entry = make_entry(Local::now(), "fixture");
+        entry.id = "../outside".into();
+        assert!(store.commit_accepted(entry, None, true, false).is_err());
+        assert!(store.delete("../outside").is_err());
+        assert!(!store.root.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_audio_delete_keeps_visible_retryable_entry() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let store = fixture();
+        let entry = make_entry(Local::now(), "synthetic locked recording");
+        store
+            .commit_accepted(entry.clone(), Some(&sample_audio()), true, true)
+            .expect("commit");
+        let path = store.root.join("audio").join(audio_stem(&entry.id));
+        let lock = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .expect("exclusive lock");
+        assert!(store.delete(&entry.id).is_err());
+        assert_eq!(store.load().expect("still retryable").len(), 1);
+        drop(lock);
+        store.delete(&entry.id).expect("retry after unlock");
+        assert!(store.load().expect("deleted").is_empty());
+        assert!(!path.exists());
+        fs::remove_dir_all(&store.root).expect("remove own fixture");
+    }
+    #[test]
+    fn concurrent_commits_and_retention_use_real_store() {
+        let store = fixture();
+        std::thread::scope(|scope| {
+            for _ in 0..12 {
+                let store = store.clone();
+                scope.spawn(move || {
+                    store
+                        .commit_accepted(make_entry(Local::now(), "fixture"), None, true, false)
+                        .expect("concurrent commit")
+                });
+            }
+        });
+        assert_eq!(store.load().expect("load").len(), 12);
+        let old = make_entry(
+            Local::now().checked_sub_days(Days::new(40)).expect("old"),
+            "old",
+        );
+        store
+            .commit_accepted(old.clone(), Some(&sample_audio()), true, true)
+            .expect("old commit");
+        assert_eq!(store.cleanup(30).expect("cleanup"), 1);
+        assert_eq!(store.load().expect("load").len(), 12);
+        assert!(!store.root.join("audio").join(audio_stem(&old.id)).exists());
+        fs::remove_dir_all(&store.root).expect("remove fixture");
+    }
 
     fn sample_audio() -> RecordedAudio {
         RecordedAudio {

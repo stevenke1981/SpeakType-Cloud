@@ -7,7 +7,7 @@ push／PR／手動執行
   → 驗證來源與版本
   → PowerShell 靜態＋行為測試、fmt、Clippy、Rust tests、release build
   → 重用執行檔 →（正式來源且配置憑證時）簽署 app
-  → 建置 NSIS installer →（有配置時）簽署 installer
+  → 建置 Inno Setup installer →（有配置時）簽署 installer
   →（簽章有效時）產生 updater manifest
   → portable ZIP、SBOM、build-info、SHA256SUMS
   → Actions artifact
@@ -88,3 +88,22 @@ pwsh -NoProfile -File .\scripts\package-portable.ps1 -SkipBuild -IncludeSymbols
 - [GitHub CLI：編輯 Release](https://cli.github.com/manual/gh_release_edit)
 - [GitHub：Immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
 - [Cargo update](https://doc.rust-lang.org/cargo/commands/cargo-update.html)
+
+## 0.2.0 Inno build and isolated acceptance
+
+The audited compiler is Inno Setup 7.1.0 x64, SHA-256 `0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f`, official Pyrsys B.V. signature. `scripts/install-inno-build-tool.ps1` verifies the pinned official download before a current-user tool installation. Pass `-IsccPath` or use the script-provided `SPEAKTYPE_ISCC`.
+
+```powershell
+pwsh -NoProfile -File scripts/install-inno-build-tool.ps1
+pwsh -NoProfile -File scripts/build-installer.ps1 -SkipBuild -IsccPath '<verified ISCC.exe>'
+pwsh -NoProfile -File scripts/check-runtime.ps1 -Executable dist/release/SpeakTypeCloud.exe
+pwsh -NoProfile -File scripts/test-inno-install.ps1 -IsccPath '<verified ISCC.exe>' -EvidenceRoot '<owned workspace>'
+```
+
+Stable AppId `SpeakTypeCloud.Slint`, current-user installation, new default application directory, optional desktop shortcut, Start Menu, app mutex guard, no forced app termination. It checks both registry views for the legacy NSIS uninstall registration and remembered custom directory. The user must normally remove the old app first. The installer never evaluates registry commands, invokes the old uninstaller or recursively removes a directory. Cancellation before installation leaves the old app untouched. After the user removes the old app, a failed/cancelled new install leaves it uninstalled but preserves profile data for retry. Old and new installers must never own the same files.
+
+The QA script creates a unique branded installer and registry namespace, synthetic legacy markers, four synthetic profile sentinels, and shortcuts with `--demo`. It verifies refusal, fresh install, hashes, licenses, shortcuts, re-run and normal uninstall. This tests real Inno execution, but synthetic legacy markers are not an actual NSIS-uninstaller upgrade test, and a fake credential file is not a live Credential Manager test. `-KeepInstalled` permits native UI acceptance before normal removal. Never publish fixture packages.
+
+MSVC CRT is statically linked in `.cargo/config.toml`; runtime verification inspects normal and delayed PE imports, refusing non-system DLL dependencies. Windows 10/11 remains the OS prerequisite. Portable and installer packages include MIT, third-party notices and Slint Royalty-free 2.0 terms. Signing policy is unchanged.
+
+Before publishing 0.2.0, freeze an immutable SHA, obtain independent review and matching CI, inspect the actual app/installer workflows, and record remaining NOT_RUN items. Do not merge conflicting branches, move existing tags, replace existing assets or infer live provider quality from mocks.

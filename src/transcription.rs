@@ -1,10 +1,7 @@
 use crate::audio::RecordedAudio;
 use crate::config::AppConfig;
 use crate::error::{AppError, AppResult};
-use crate::paths;
 use crate::providers::{build_provider, ProviderRequest, ProviderResponse, SpeechToTextProvider};
-use chrono::Local;
-use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -13,6 +10,70 @@ use std::time::Duration;
 const DEFAULT_MAX_ATTEMPTS: usize = 3;
 const DEFAULT_BACKOFF: Duration = Duration::from_millis(500);
 const DEFAULT_MAX_BACKOFF: Duration = Duration::from_secs(2);
+
+/// Self-generated tone; never uses a microphone or an input file.
+pub fn synthetic_audio() -> RecordedAudio {
+    RecordedAudio {
+        samples: (0..16_000)
+            .map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / 16_000.0).sin() * 0.1)
+            .collect(),
+        sample_rate: 16_000,
+        channels: 1,
+    }
+}
+
+/// Exercises WAV encoding, the real cancellable worker and completion channel,
+/// but never constructs an HTTP provider or reads configuration/credentials.
+pub fn spawn_demo(id: JobId, audio: RecordedAudio, tx: Sender<JobMessage>) -> CancellationToken {
+    let cancellation = CancellationToken::new();
+    let worker_cancellation = cancellation.clone();
+    std::thread::spawn(move || {
+        let result = (|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| AppError::Configuration(e.to_string()))?;
+            let duration = audio.duration_secs();
+            let request = ProviderRequest {
+                wav_bytes: audio.wav_16khz_mono_i16()?,
+                language: Some("zh-TW".into()),
+                prompt: None,
+            };
+            let response = runtime.block_on(transcribe_with_retry(
+                &DemoProvider,
+                request,
+                &worker_cancellation,
+                RetryPolicy::default(),
+            ))?;
+            Ok(JobResult {
+                response,
+                local_duration_secs: duration,
+                cleanup: None,
+                cleanup_error: None,
+            })
+        })();
+        let _ = tx.send(JobMessage { id, result });
+    });
+    cancellation
+}
+
+struct DemoProvider;
+
+#[async_trait::async_trait]
+impl SpeechToTextProvider for DemoProvider {
+    async fn transcribe(&self, request: ProviderRequest) -> AppResult<ProviderResponse> {
+        if !request.wav_bytes.starts_with(b"RIFF") {
+            return Err(AppError::Audio("示範 WAV 格式錯誤".into()));
+        }
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        Ok(ProviderResponse {
+            text: "這是離線示範。我們在下午 3 點測試 SpeakType Cloud，不會傳送錄音。".into(),
+            duration_secs: Some(1.0),
+            provider: "離線示範（非語音辨識）".into(),
+            model: None,
+        })
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JobId(pub u64);
@@ -26,6 +87,8 @@ pub struct JobMessage {
 pub struct JobResult {
     pub response: ProviderResponse,
     pub local_duration_secs: f32,
+    pub cleanup: Option<crate::cleanup::CleanupResult>,
+    pub cleanup_error: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -53,7 +116,7 @@ impl CancellationToken {
         self.inner.cancelled.load(Ordering::Acquire)
     }
 
-    async fn cancelled(&self) {
+    pub(crate) async fn cancelled(&self) {
         if self.is_cancelled() {
             return;
         }
@@ -69,7 +132,7 @@ impl CancellationToken {
         }
     }
 
-    fn check(&self) -> AppResult<()> {
+    pub(crate) fn check(&self) -> AppResult<()> {
         if self.is_cancelled() {
             Err(AppError::Cancelled)
         } else {
@@ -146,14 +209,11 @@ async fn run(
     let local_duration_secs = audio.duration_secs();
     let wav = audio.wav_16khz_mono_i16()?;
     cancellation.check()?;
-    if config.save_recordings {
-        save_recording(&wav)?;
-    }
     cancellation.check()?;
     let provider = build_provider(&config)?;
     let request = ProviderRequest {
         wav_bytes: wav,
-        language: Some(config.language.clone()),
+        language: config.requested_language(),
         prompt: Some(config.prompt.clone()),
     };
     let response = transcribe_with_retry(
@@ -167,9 +227,21 @@ async fn run(
     if response.text.trim().is_empty() {
         return Err(AppError::Transcription("API 回傳空白辨識結果".to_string()));
     }
+    let (cleanup, cleanup_error) = if config.cleanup.enabled {
+        match crate::cleanup::run(&config, &response.text, cancellation).await {
+            Ok(result) => (Some(result), None),
+            Err(AppError::Cancelled) => return Err(AppError::Cancelled),
+            Err(error) => (None, Some(error.to_string())),
+        }
+    } else {
+        (None, None)
+    };
+    cancellation.check()?;
     Ok(JobResult {
         response,
         local_duration_secs,
+        cleanup,
+        cleanup_error,
     })
 }
 
@@ -197,16 +269,6 @@ pub(crate) async fn transcribe_with_retry(
         }
     }
     Err(AppError::Transcription("重試次數已達上限".to_string()))
-}
-
-fn save_recording(wav: &[u8]) -> AppResult<()> {
-    let dir = paths::recordings_dir();
-    fs::create_dir_all(&dir).map_err(|e| AppError::Io(e.to_string()))?;
-    let path = dir.join(format!(
-        "recording_{}.wav",
-        Local::now().format("%Y%m%d_%H%M%S_%3f")
-    ));
-    fs::write(path, wav).map_err(|e| AppError::Io(e.to_string()))
 }
 
 #[cfg(test)]

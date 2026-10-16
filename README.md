@@ -3,9 +3,9 @@
 [![Windows CI and Release](https://github.com/stevenke1981/SpeakType-Cloud/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/stevenke1981/SpeakType-Cloud/actions/workflows/windows.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**在 Windows 文字輸入框中，按住快捷鍵說話，放開後把辨識結果貼回原視窗。**
+**在 Windows 文字輸入框中，按住快捷鍵說話，放開後預覽原文與整理結果，再確認貼上。**
 
-SpeakType Cloud 是以 Rust 開發的 Windows 雲端語音輸入工具，整合 OpenAI、xAI 與 OpenRouter。使用雲端 API，不需安裝本機 Whisper、CUDA 或大型語音模型；需要網路、自己的 API Key，以及供應商可用額度。它使用全域熱鍵與剪貼簿貼上，**不是 Windows IME 核心替代品**。
+SpeakType Cloud 是以 Rust + Slint 開發的 Windows 雲端語音輸入工具，整合 Gemini、OpenAI、xAI 與 OpenRouter。使用雲端 API，不需安裝本機 Whisper、CUDA 或大型語音模型；需要網路、自己的 API Key，以及供應商可用額度。它使用全域熱鍵與剪貼簿貼上，**不是 Windows IME 核心替代品**。
 
 ## 下載與安裝
 
@@ -28,12 +28,24 @@ Get-FileHash .\SpeakTypeCloud-portable.zip -Algorithm SHA256
 
 將結果與同一個 Release 的 `SHA256SUMS.txt` 對照。校驗碼可偵測檔案損毀，不取代可信任的程式碼簽章。
 
+## 0.2.0 Slint、Gemini 與文字整理
+
+- 繁中 Slint 介面，原文與可編輯結果並排；取消、重試、還原原文、複製及安全貼上。
+- Gemini 支援批次轉錄；Realtime／Continuous 不支援。可選額外一次 Gemini 文字整理請求，包含語助詞、重複、自我修正、段落／列表、保守潤飾及語氣偏好。整理後必須預覽確認，不自動貼上。
+- 個人詞典與風格建議須由你接受後再儲存設定；不讀其他程式內容，不在背景訓練。
+- 語言填入 `auto` 可讓供應商偵測，也可指定語言。實際多語品質尚未評測；未宣稱與 Typeless 全功能相同或支援「100+ 語言」。
+- 縮小至系統匣及關閉視窗可隱藏；系統匣提供顯示／退出。退出先取消語音工作並等待背景寫入收尾。
+- Key 自行在設定輸入。Google 轉錄／整理會傳送音訊或文字，可能收費；免費與付費資料規則不同，請閱讀 [Google 條款](https://ai.google.dev/gemini-api/terms)。BYOK 不代表零留存。
+- `SpeakTypeCloud.exe --demo` 使用合成音與固定 mock 結果，不讀私人設定、不開麥克風、不連網、不操作其他程式；示範不等於真實 ASR 測試。
+
+從 0.1.0 升級時，先正常解除舊 NSIS 版，再執行 Inno 安裝。舊登錄或自訂目錄殘留會阻止安裝，避免新舊解除安裝程式管理同批檔案。新安裝取消後可重試，使用者資料保留；登入自啟請在新版設定重新啟用。
+
 ## 第一次使用
 
-1. 啟動程式，從右上角 **「API 金鑰」** 儲存選定供應商的 Key。
+1. 啟動程式，從 **「設定與詞典」** 儲存選定供應商的 Key。
 2. 選擇供應商、模型、語言與麥克風；先使用預設的 **Batch PTT**。
 3. 切換到記事本或其他文字輸入框，按住 **`Ctrl+Shift+Space`** 說話。
-4. 放開快捷鍵，等待辨識完成。程式會嘗試貼回錄音開始時的視窗；若被 Windows 拒絕或目標已失效，請從最後辨識結果手動複製。
+4. 放開快捷鍵，等待辨識完成。新設定預設只顯示預覽；確認後按「安全貼上」才會嘗試貼回錄音開始時的視窗；若被 Windows 拒絕或目標已失效，請從最後辨識結果手動複製。
 
 先在記事本確認錄音、辨識與貼上流程，再使用瀏覽器、VS Code 或 Office。處理敏感內容前，請先檢查歷史紀錄及錄音保存設定。
 
@@ -58,9 +70,9 @@ Batch 是預設流程。Realtime／Continuous 是選用功能，不代表所有�
 
 ## 金鑰、資料與隱私
 
-GUI 儲存的 Key 使用 **Windows Credential Manager**，不寫入 `config.toml`。亦支援 `OPENAI_API_KEY`、`XAI_API_KEY`、`OPENROUTER_API_KEY` 環境變數；目前程序的環境值優先。建議一般使用者透過 GUI 設定，避免把真實 Key 寫進指令歷史、截圖或 Git。
+GUI 儲存的 Key 使用 **Windows Credential Manager**，不寫入 `config.toml`。亦支援 `GEMINI_API_KEY`、`OPENAI_API_KEY`、`XAI_API_KEY`、`OPENROUTER_API_KEY` 環境變數；目前程序的環境值優先。建議一般使用者透過 GUI 設定，避免把真實 Key 寫進指令歷史、截圖或 Git。
 
-**目前不是零音訊落地模式。** 一般 `save_wav` 選項預設關閉，但歷史功能是獨立路徑：Batch 在辨識前仍會嘗試將音訊寫入 `history/audio`，供歷史功能使用；關閉 `save_wav` 不代表不保存歷史音訊。啟動錄音後，音訊會傳送到選定供應商。設定與資料位置由 [src/paths.rs](src/paths.rs) 計算。移除程式**不會自動刪除**設定、歷史、錄音或 Credential Manager 項目；要清除 app 儲存的 Key，請先使用 GUI 的清除功能。完整說明見 [SECURITY.md](SECURITY.md)。
+0.2.0 的文字與音訊保存為分開的 opt-in，新設定皆預設關閉。只有接受的成功結果才可進入歷史寫入，取消或失敗不新增音訊。關閉保存不自動刪除舊資料，可在歷史頁明確刪除或設定保留天數。解除安裝保留設定、歷史與金鑰。錄音會傳送給選定供應商；完整隱私與限制見 [SECURITY.md](SECURITY.md)。
 
 ## 常見問題
 
@@ -94,7 +106,7 @@ pwsh -NoProfile -File .\scripts\package-portable.ps1 -SkipBuild
 pwsh -NoProfile -File .\scripts\generate-sbom.ps1
 ```
 
-單獨建置可不加 `-SkipBuild`。需要 PDB 時，portable 腳本另加 `-IncludeSymbols`；一般使用者下載包預設不包含除錯符號。NSIS 安裝器、簽章與維護流程見 [docs/RELEASING.md](docs/RELEASING.md)。
+單獨建置可不加 `-SkipBuild`。需要 PDB 時，portable 腳本另加 `-IncludeSymbols`；一般使用者下載包預設不包含除錯符號。Inno Setup 7.1.0 安裝器、簽章與維護流程見 [docs/RELEASING.md](docs/RELEASING.md)。
 
 ## GitHub 自動發行
 

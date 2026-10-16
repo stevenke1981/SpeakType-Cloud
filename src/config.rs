@@ -3,6 +3,7 @@ use crate::paths;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::ErrorKind;
+use std::io::Write;
 
 pub const MAX_RECORDING_DURATION_SECS: u64 = 120;
 
@@ -12,6 +13,7 @@ pub enum ProviderKind {
     OpenAi,
     Xai,
     OpenRouter,
+    Gemini,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -44,12 +46,14 @@ impl OpenAiTranscriptionDelay {
         }
     }
 
+    #[cfg(all(feature = "legacy-ui", not(feature = "slint-ui")))]
     pub fn label(self) -> &'static str {
         self.as_api_str()
     }
 }
 
 impl TranscriptionMode {
+    #[cfg(all(feature = "legacy-ui", not(feature = "slint-ui")))]
     pub fn label(self) -> &'static str {
         match self {
             Self::BatchPtt => "Batch / PTT",
@@ -64,7 +68,10 @@ impl TranscriptionMode {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct HistoryConfig {
+    /// Explicit local transcript retention, disabled by default.
+    pub save_text: bool,
     /// Number of days to keep history entries.  0 = keep forever.
     pub retention_days: u64,
 }
@@ -78,6 +85,7 @@ pub enum ChineseVariant {
 }
 
 impl ChineseVariant {
+    #[cfg(all(feature = "legacy-ui", not(feature = "slint-ui")))]
     pub fn label(self) -> &'static str {
         match self {
             Self::Preserve => "保留原文",
@@ -136,6 +144,7 @@ impl ProviderKind {
             Self::OpenAi => "OpenAI",
             Self::Xai => "xAI",
             Self::OpenRouter => "OpenRouter",
+            Self::Gemini => "Google Gemini",
         }
     }
 }
@@ -192,6 +201,24 @@ impl Default for OpenRouterConfig {
             base_url: "https://openrouter.ai/api".to_string(),
             model: "openai/gpt-4o-mini-transcribe".to_string(),
             api_key_env: "OPENROUTER_API_KEY".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GeminiConfig {
+    pub model: String,
+    pub api_key_env: String,
+    /// Explicit user opt-in, not inferred from possession of an API key.
+    pub cloud_consent: bool,
+}
+impl Default for GeminiConfig {
+    fn default() -> Self {
+        Self {
+            model: "gemini-3.8-flash".into(),
+            api_key_env: "GEMINI_API_KEY".into(),
+            cloud_consent: false,
         }
     }
 }
@@ -273,8 +300,8 @@ pub struct OutputConfig {
 impl Default for OutputConfig {
     fn default() -> Self {
         Self {
-            buffer_mode: OutputBufferMode::default(),
-            auto_inject: true,
+            buffer_mode: OutputBufferMode::Temporary,
+            auto_inject: false,
             restore_clipboard: true,
             preserve_target_window: true,
             copy_only_on_injection_failure: true,
@@ -297,11 +324,13 @@ pub struct AppConfig {
     pub openai: OpenAiConfig,
     pub xai: XaiConfig,
     pub openrouter: OpenRouterConfig,
+    pub gemini: GeminiConfig,
     pub recording: RecordingConfig,
     pub realtime: RealtimeConfig,
     pub output: OutputConfig,
     pub text_processing: TextProcessingConfig,
     pub history: HistoryConfig,
+    pub cleanup: crate::cleanup::CleanupConfig,
 }
 
 impl Default for AppConfig {
@@ -309,7 +338,7 @@ impl Default for AppConfig {
         Self {
             provider: ProviderKind::OpenAi,
             transcription_mode: TranscriptionMode::BatchPtt,
-            language: "zh".to_string(),
+            language: "auto".to_string(),
             prompt: "使用繁體中文標點；保留專有名詞、英文縮寫與程式碼名稱。".to_string(),
             hotkey: "Ctrl+Shift+Space".to_string(),
             hold_to_record: true,
@@ -318,16 +347,26 @@ impl Default for AppConfig {
             openai: OpenAiConfig::default(),
             xai: XaiConfig::default(),
             openrouter: OpenRouterConfig::default(),
+            gemini: GeminiConfig::default(),
             recording: RecordingConfig::default(),
             realtime: RealtimeConfig::default(),
             output: OutputConfig::default(),
             text_processing: TextProcessingConfig::default(),
             history: HistoryConfig::default(),
+            cleanup: crate::cleanup::CleanupConfig::default(),
         }
     }
 }
 
 impl AppConfig {
+    pub fn requested_language(&self) -> Option<String> {
+        let value = self.language.trim();
+        if value.is_empty() || value.eq_ignore_ascii_case("auto") {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    }
     pub fn load() -> AppResult<Self> {
         let path = paths::config_path();
         match fs::read_to_string(&path) {
@@ -341,13 +380,30 @@ impl AppConfig {
     }
 
     pub fn save(&self) -> AppResult<()> {
-        let path = paths::config_path();
+        self.save_to_path(&paths::config_path())
+    }
+
+    fn save_to_path(&self, path: &std::path::Path) -> AppResult<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| AppError::Io(e.to_string()))?;
         }
         let text =
             toml::to_string_pretty(self).map_err(|e| AppError::Configuration(e.to_string()))?;
-        fs::write(path, text).map_err(|e| AppError::Io(e.to_string()))
+        let temporary = path.with_extension(format!("{}.tmp", crate::history::next_id()));
+        let result = (|| {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temporary, path)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result.map_err(|e| AppError::Io(e.to_string()))
     }
 
     pub fn api_key_env(&self) -> &str {
@@ -355,10 +411,23 @@ impl AppConfig {
             ProviderKind::OpenAi => &self.openai.api_key_env,
             ProviderKind::Xai => &self.xai.api_key_env,
             ProviderKind::OpenRouter => &self.openrouter.api_key_env,
+            ProviderKind::Gemini => &self.gemini.api_key_env,
         }
     }
 
     pub fn validate(&self) -> AppResult<()> {
+        if self.cleanup.custom_style.len() > 1000
+            || !["preserve", "neutral", "friendly", "formal"].contains(&self.cleanup.tone.as_str())
+        {
+            return Err(AppError::Configuration(
+                "文字風格設定無效或超過 1000 字元組".into(),
+            ));
+        }
+        if self.cleanup.enabled && self.transcription_mode.is_realtime() {
+            return Err(AppError::Configuration(
+                "AI 整理目前需要 Batch / PTT；即時模式請先關閉整理".into(),
+            ));
+        }
         if self.hotkey.trim().is_empty() {
             return Err(AppError::Configuration("全域熱鍵不可為空".to_string()));
         }
@@ -419,12 +488,21 @@ impl AppConfig {
         if !is_environment_variable_name(&self.openai.api_key_env)
             || !is_environment_variable_name(&self.xai.api_key_env)
             || !is_environment_variable_name(&self.openrouter.api_key_env)
+            || !is_environment_variable_name(&self.gemini.api_key_env)
         {
             return Err(AppError::Configuration(
                 "API Key 欄位必須是有效的環境變數名稱，不可填入 API Key 本身".to_string(),
             ));
         }
         let mut dictionary_sources = std::collections::HashSet::new();
+        if !crate::providers::valid_gemini_model(&self.gemini.model) {
+            return Err(AppError::Configuration("Gemini 模型名稱格式無效".into()));
+        }
+        if self.provider == ProviderKind::Gemini && self.transcription_mode.is_realtime() {
+            return Err(AppError::Configuration(
+                "Gemini 目前支援 Batch / PTT，請切換模式".into(),
+            ));
+        }
         for entry in &self.text_processing.dictionary {
             if entry.source.trim().is_empty() || entry.source != entry.source.trim() {
                 return Err(AppError::Configuration(
@@ -485,6 +563,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn automatic_language_is_omitted_and_explicit_language_preserved() {
+        let mut config = AppConfig::default();
+        for value in ["", "auto", " AUTO "] {
+            config.language = value.into();
+            assert_eq!(config.requested_language(), None);
+        }
+        config.language = "ja".into();
+        assert_eq!(config.requested_language().as_deref(), Some("ja"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_settings_save_preserves_previous_file_when_replacement_is_locked() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let folder = std::env::current_dir()
+            .expect("workspace")
+            .join("target")
+            .join(format!("config-fixture-{}", crate::history::next_id()));
+        fs::create_dir_all(&folder).expect("fixture");
+        let path = folder.join("config.toml");
+        let mut config = AppConfig::default();
+        config.save_to_path(&path).expect("initial save");
+        let before = fs::read(&path).expect("read fixture");
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&path)
+            .expect("deny rename");
+        config.language = "ja".into();
+        assert!(config.save_to_path(&path).is_err());
+        drop(lock);
+        assert_eq!(fs::read(&path).expect("unchanged"), before);
+        config.save_to_path(&path).expect("retry");
+        assert_eq!(
+            parse_config(&fs::read_to_string(&path).expect("read"))
+                .expect("parse")
+                .language,
+            "ja"
+        );
+        assert_eq!(fs::read_dir(&folder).expect("list").count(), 1);
+        fs::remove_dir_all(folder).expect("remove own fixture");
+    }
+
+    #[test]
     fn openai_realtime_delay_uses_only_official_enum_values() {
         for (delay, encoded) in [
             (OpenAiTranscriptionDelay::Minimal, "minimal"),
@@ -498,6 +620,27 @@ mod tests {
                 Some(encoded)
             );
         }
+    }
+
+    #[test]
+    fn old_configs_migrate_with_private_defaults_and_google_opt_in() {
+        let config = parse_config("[history]\nretention_days=30\n").expect("legacy config");
+        assert_eq!(config.history.retention_days, 30);
+        assert!(!config.history.save_text);
+        assert!(!config.save_recordings);
+        assert!(!config.cleanup.enabled);
+        assert!(!config.gemini.cloud_consent);
+        assert!(!config.output.auto_inject);
+        assert_eq!(config.output.buffer_mode, OutputBufferMode::Temporary);
+        let gemini = AppConfig {
+            provider: ProviderKind::Gemini,
+            ..config
+        };
+        assert!(crate::providers::build_provider(&gemini)
+            .err()
+            .expect("consent required before key read")
+            .to_string()
+            .contains("同意"));
     }
 
     #[test]

@@ -24,7 +24,7 @@ GlobalHotkey / GUI
 
 ## 執行緒界線
 
-- egui 主執行緒：UI、錄音開始／停止、狀態機。
+- Slint 主執行緒：宣告式 UI 與 40ms 狀態投影。`app.rs` 管理工作生命週期；`slint_services.rs` 以背景工作處理磁碟、模型、金鑰及更新。egui 只保留為可選 `legacy-ui` 對照建置。
 - rdev listener thread：只產生 Pressed/Released 事件，不直接操作 UI 或錄音。
 - batch transcription worker：WAV 編碼後以可取消的 async HTTP 呼叫供應商，透過每個 Job 專屬 channel 與 JobId 回傳。
 - realtime worker：擁有 WebSocket、stateful resampler、固定 10 ms VAD frames 與 session cancellation；停止後送出 `Stopped` ack，UI 才允許下一個工作。
@@ -44,3 +44,9 @@ Batch `SpeechToTextProvider` 與 realtime session abstraction 分離，兩者都
 ## 文字注入
 
 錄音開始時使用 `GetForegroundWindow` 保存 HWND。辨識完成後驗證 `IsWindow`，呼叫 `SetForegroundWindow`，再將文字暫存到剪貼簿並送出 Ctrl+V。這比逐字模擬鍵盤更適合中文與大量文字。
+
+## 0.2.0 boundary updates
+
+Gemini batch and optional text cleanup remain independent of UI. Active jobs capture immutable options and cancellation; only accepted results may persist. Revision-based preview projection replaces stale drafts even when two results are equal. Closing rejects new work and asynchronously drains workers/persistence.
+
+HistoryStore validates identifiers and audio basenames and serializes disk writes. Config and history manifests use atomic same-directory replacement. Inno per-user packages have a separate AppId and require normal legacy NSIS removal before installation; they never execute registry command strings or recursively delete user data. See `docs/slint-migration/ARCHITECTURE-PROPOSAL.md`.

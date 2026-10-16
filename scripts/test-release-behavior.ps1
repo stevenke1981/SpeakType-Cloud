@@ -1,4 +1,5 @@
 #Requires -Version 7.2
+param([string]$TestRoot = [IO.Path]::GetTempPath())
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'release-common.ps1')
 $script:passed = 0
@@ -13,7 +14,9 @@ function Test-Case([string]$Name, [scriptblock]$Action) {
     $script:passed++
     Write-Host "PASS: $Name"
 }
-$temp = Join-Path ([IO.Path]::GetTempPath()) "SpeakTypeCloud-release-tests-$([Guid]::NewGuid().ToString('N'))"
+$testRootFull = [IO.Path]::GetFullPath($TestRoot)
+if (-not (Test-Path -LiteralPath $testRootFull -PathType Container)) { throw 'TestRoot must be an existing directory' }
+$temp = Join-Path $testRootFull "SpeakTypeCloud-release-tests-$([Guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $temp | Out-Null
 try {
     Test-Case 'SemVer accepts stable, prerelease and build identifiers' {
@@ -141,7 +144,9 @@ try {
     $fixture = Join-Path $temp 'fixture'
     New-Item -ItemType Directory -Force -Path "$fixture\scripts", "$fixture\target\release" | Out-Null
     foreach ($name in @('build-release.ps1', 'package-portable.ps1')) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination "$fixture\scripts" }
-    foreach ($name in @('LICENSE', 'README.md', 'SECURITY.md', 'API_PROVIDERS.md', 'config.toml', '.env')) { 'Offline fixture only.' | Set-Content -LiteralPath (Join-Path $fixture $name) }
+    New-Item -ItemType Directory -Force -Path "$fixture\docs\licenses" | Out-Null
+    'Synthetic license test fixture' | Set-Content -LiteralPath "$fixture\docs\licenses\slint-royalty-free-2.0.pdf"
+    foreach ($name in @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md', 'SECURITY.md', 'API_PROVIDERS.md', 'config.toml', '.env')) { 'Offline fixture only.' | Set-Content -LiteralPath (Join-Path $fixture $name) }
     'Not executable; packaging fixture only.' | Set-Content -LiteralPath "$fixture\target\release\speaktype-cloud.exe"
     'Debug fixture.' | Set-Content -LiteralPath "$fixture\target\release\speaktype_cloud.pdb"
     Test-Case 'SkipBuild stages the existing executable and PDB' {

@@ -1,4 +1,6 @@
 fn main() {
+    #[cfg(feature = "slint-ui")]
+    slint_build::compile("ui/main.slint").expect("compile Slint interface");
     #[cfg(windows)]
     {
         let mut res = winresource::WindowsResource::new();

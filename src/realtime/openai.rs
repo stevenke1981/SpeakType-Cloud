@@ -39,7 +39,7 @@ pub async fn connect(
         .await
         .map_err(|error| AppError::provider(error.to_string(), true))?;
     let (mut writer, mut reader) = socket.split();
-    let update = json!({
+    let mut update = json!({
         "type": "session.update",
         "session": {
             "type": "transcription",
@@ -56,6 +56,12 @@ pub async fn connect(
             }
         }
     });
+    if language.trim().is_empty() || language.eq_ignore_ascii_case("auto") {
+        update["session"]["audio"]["input"]["transcription"]
+            .as_object_mut()
+            .expect("locally constructed transcription object")
+            .remove("language");
+    }
     tokio::time::timeout(
         IO_TIMEOUT,
         writer.send(Message::Text(update.to_string().into())),

@@ -1,8 +1,11 @@
+mod gemini;
 mod models;
 mod openai;
 mod openrouter;
 mod xai;
 
+pub use gemini::valid_model as valid_gemini_model;
+pub(crate) use gemini::GeminiProvider;
 pub use models::fetch_available_models;
 
 use crate::config::{AppConfig, ProviderKind};
@@ -26,14 +29,26 @@ pub struct ProviderResponse {
 }
 
 #[async_trait::async_trait]
+// async-trait emits #[must_use] on its boxed Future on Rust 1.99.
+#[allow(clippy::double_must_use)]
 pub trait SpeechToTextProvider: Send + Sync {
     async fn transcribe(&self, request: ProviderRequest) -> AppResult<ProviderResponse>;
 }
 
 pub fn build_provider(config: &AppConfig) -> AppResult<Box<dyn SpeechToTextProvider>> {
+    if config.provider == ProviderKind::Gemini && !config.gemini.cloud_consent {
+        return Err(AppError::Configuration(
+            "請先在設定同意將音訊傳送至 Google Gemini".into(),
+        ));
+    }
     let api_key = load_api_key(config)?;
     let timeout = Duration::from_secs(150);
     match config.provider {
+        ProviderKind::Gemini => Ok(Box::new(GeminiProvider::new(
+            config.gemini.model.clone(),
+            api_key,
+            timeout,
+        )?)),
         ProviderKind::OpenAi => Ok(Box::new(openai::OpenAiProvider::new(
             config.openai.base_url.clone(),
             config.openai.model.clone(),
